@@ -1,103 +1,168 @@
-// Pedestrians as plain state. They walk the sidewalks, cross at intersections,
-// and run from a speeding car or a wanted chase. One who is hit hard goes down;
-// hitting one is a crime, so the world watches for it.
-import { CITY } from './config.js';
-import { clampToCity, groundHeight } from './city.js';
+// People: Nara on foot, pedestrians, and the witness NPC.
+// Pedestrians walk the sidewalks and scatter when a car bears down.
+// The witness follows Nara once picked up (mission 3).
+import * as THREE from 'three';
+import { CONFIG, clamp } from './config.js';
+import { createRng } from './random.js';
 
-const PED_COLORS = [0xd8b25a, 0x7a9ac2, 0xc27a7a, 0x8ac27a, 0xb08ac2, 0xd8d8d8, 0x5a7a8a];
+function buildPersonMesh(shirtColor) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: shirtColor, roughness: 0.8 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0xc89878, roughness: 0.7 });
+  const legs = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.8, 0.26), new THREE.MeshStandardMaterial({ color: 0x1e242a, roughness: 0.9 }));
+  legs.position.y = 0.4;
+  g.add(legs);
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.62, 0.32), mat);
+  torso.position.y = 1.1;
+  g.add(torso);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 10, 8), skin);
+  head.position.y = 1.62;
+  g.add(head);
+  return g;
+}
 
-export function createPed(x, z, random) {
+export function createPeople(world, layout, scene) {
+  const rng = createRng(777);
+  const walkers = [];
+  let witness = null;
+
+  function spawnWalker() {
+    const p = layout.randomStreetPoint();
+    const mesh = buildPersonMesh(rng.pick([0x4a7a8c, 0x8c4a5a, 0x5a8c4a, 0xc8a03a, 0x6a5a8c]));
+    const w = {
+      x: p.x, z: p.z, heading: rng.range(0, Math.PI * 2),
+      speed: CONFIG.pedestrians.speed * rng.range(0.7, 1.3),
+      mesh, flee: 0, target: layout.randomStreetPoint(),
+    };
+    mesh.position.set(w.x, world.groundHeight(w.x, w.z), w.z);
+    scene.add(mesh);
+    walkers.push(w);
+    return w;
+  }
+
+  function spawnWitness(x, z) {
+    const mesh = buildPersonMesh(0xd8d8d8);
+    mesh.scale.setScalar(1.05);
+    witness = {
+      x, z, heading: 0, mesh, following: false, inCar: false,
+    };
+    mesh.position.set(x, world.groundHeight(x, z), z);
+    scene.add(mesh);
+    return witness;
+  }
+
+  // Nara on foot. Returns nothing; mutates the player object.
+  function movePlayerOnFoot(player, input, dt, cars) {
+    const run = input.run ? CONFIG.player.runSpeed : CONFIG.player.walkSpeed;
+    let mx = 0, mz = 0;
+    if (input.forward) mz += 1;
+    if (input.back) mz -= 1;
+    if (input.left) mx -= 1;
+    if (input.right) mx += 1;
+    const moving = mx !== 0 || mz !== 0;
+    if (moving) {
+      // Movement is camera-relative: forward is away from the camera.
+      // The camera sits behind the player, so forward = -Z rotated by camYaw.
+      const yaw = player.camYaw;
+      const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+      const rx = -fz, rz = fx;
+      const dx = fx * mz + rx * mx;
+      const dz = fz * mz + rz * mx;
+      const len = Math.hypot(dx, dz);
+      player.x += (dx / len) * run * dt;
+      player.z += (dz / len) * run * dt;
+      player.heading = Math.atan2(dx, dz);
+      player.speed = run;
+    } else {
+      player.speed = 0;
+    }
+    const fixed = world.collide(player.x, player.z, 0.6);
+    player.x = fixed.x;
+    player.z = fixed.z;
+    player.y = world.groundHeight(player.x, player.z);
+    // Keep cars from running Nara over silently: a traffic car that
+    // touches her on foot counts as a hit (handled by the caller via
+    // the returned overlap flag).
+    let hitBy = null;
+    for (const c of cars) {
+      const dx = c.x - player.x, dz = c.z - player.z;
+      if (dx * dx + dz * dz < 3.2 * 3.2 && Math.abs(c.speed) > 3) { hitBy = c; break; }
+    }
+    return hitBy;
+  }
+
+  function update(dt, player, cars) {
+    for (const w of walkers) {
+      // Flee from a fast car nearby.
+      let fx = 0, fz = 0;
+      for (const c of cars) {
+        const dx = w.x - c.x, dz = w.z - c.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < 100 && Math.abs(c.speed) > 4) {
+          const d = Math.sqrt(d2) || 1;
+          fx += (dx / d) * 6; fz += (dz / d) * 6;
+          w.flee = 1.2;
+        }
+      }
+      if (w.flee > 0) {
+        w.flee -= dt;
+        w.x += fx * dt * 2;
+        w.z += fz * dt * 2;
+        w.heading = Math.atan2(fx, fz);
+      } else {
+        const dx = w.target.x - w.x, dz = w.target.z - w.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist < 6) { w.target = layout.randomStreetPoint(); continue; }
+        w.x += (dx / dist) * w.speed * dt;
+        w.z += (dz / dist) * w.speed * dt;
+        w.heading = Math.atan2(dx, dz);
+      }
+      const fixed = world.collide(w.x, w.z, 0.5);
+      w.x = fixed.x;
+      w.z = fixed.z;
+      w.mesh.position.set(w.x, world.groundHeight(w.x, w.z), w.z);
+      w.mesh.rotation.y = w.heading;
+    }
+    // The witness follows Nara on foot, or rides in her car.
+    if (witness) {
+      if (witness.inCar) {
+        witness.mesh.visible = false;
+      } else if (witness.following) {
+        const dx = player.x - witness.x, dz = player.z - witness.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 2.5) {
+          witness.x += (dx / dist) * 5 * dt;
+          witness.z += (dz / dist) * 5 * dt;
+          witness.heading = Math.atan2(dx, dz);
+        }
+        const fixed = world.collide(witness.x, witness.z, 0.5);
+        witness.x = fixed.x;
+        witness.z = fixed.z;
+        witness.mesh.visible = true;
+        witness.mesh.position.set(witness.x, world.groundHeight(witness.x, witness.z), witness.z);
+        witness.mesh.rotation.y = witness.heading;
+      } else {
+        witness.mesh.visible = true;
+        witness.mesh.position.set(witness.x, world.groundHeight(witness.x, witness.z), witness.z);
+      }
+    }
+  }
+
   return {
-    x, z, y: 0, heading: random() * Math.PI * 2, speed: 1.2 + random() * 0.8,
-    color: PED_COLORS[Math.floor(random() * PED_COLORS.length)],
-    state: 'walk', // walk | flee | down
-    downTimer: 0, targetX: x, targetZ: z, active: true,
+    walkers,
+    get witness() { return witness; },
+    spawnWalker, spawnWitness, movePlayerOnFoot, update,
+    spawnCrowd(n) { for (let i = 0; i < n; i++) spawnWalker(); },
+    clearWitness() {
+      if (witness) { scene.remove(witness.mesh); witness = null; }
+    },
+    // A pedestrian the player's car just hit (for wanted + mission).
+    carHitPedestrian(car) {
+      for (const w of walkers) {
+        const dx = w.x - car.x, dz = w.z - car.z;
+        if (dx * dx + dz * dz < 3.0 * 3.0 && Math.abs(car.speed) > 5) return w;
+      }
+      return null;
+    },
   };
-}
-
-function pickTarget(ped, random) {
-  // Walk to a nearby sidewalk point: offset from a road line.
-  const road = CITY.roads[Math.floor(random() * CITY.roads.length)];
-  const along = (random() * 2 - 1) * 150;
-  if (random() < 0.5) {
-    ped.targetX = road + (random() < 0.5 ? 8 : -8);
-    ped.targetZ = along;
-  } else {
-    ped.targetX = along;
-    ped.targetZ = road + (random() < 0.5 ? 8 : -8);
-  }
-}
-
-export function spawnPeds(random, count) {
-  const peds = [];
-  for (let i = 0; i < count; i += 1) {
-    const ped = createPed((random() * 2 - 1) * 160, (random() * 2 - 1) * 160, random);
-    pickTarget(ped, random);
-    peds.push(ped);
-  }
-  return peds;
-}
-
-/**
- * One step for every pedestrian. `threat` is the player car (or null): peds run
- * from it when it comes at them fast. Returns the pedestrians hit this step
- * (their indices), so the caller can count the crime once per ped.
- */
-export function updatePeds(peds, dt, random, threat, threatSpeed) {
-  const hit = [];
-  for (let i = 0; i < peds.length; i += 1) {
-    const ped = peds[i];
-    if (!ped.active) continue;
-    if (ped.state === 'down') {
-      ped.downTimer -= dt;
-      if (ped.downTimer <= 0) {
-        ped.state = 'walk';
-        pickTarget(ped, random);
-      }
-      continue;
-    }
-    let speed = ped.speed;
-    if (threat && threatSpeed > 6) {
-      const dx = ped.x - threat.x;
-      const dz = ped.z - threat.z;
-      const d2 = dx * dx + dz * dz;
-      if (d2 < 144) {
-        ped.state = 'flee';
-        const d = Math.sqrt(d2) || 1;
-        ped.heading = Math.atan2(dx / d, dz / d);
-        speed = 4.5;
-      }
-    }
-    if (ped.state === 'flee') {
-      ped.x += Math.sin(ped.heading) * speed * dt;
-      ped.z += Math.cos(ped.heading) * speed * dt;
-      clampToCity(ped);
-      if (!threat || (ped.x - threat.x) ** 2 + (ped.z - threat.z) ** 2 > 900) ped.state = 'walk';
-      continue;
-    }
-    // Walk toward the current target; pick a new one on arrival.
-    const dx = ped.targetX - ped.x;
-    const dz = ped.targetZ - ped.z;
-    const dist = Math.sqrt(dx * dx + dz * dz);
-    if (dist < 2) {
-      pickTarget(ped, random);
-      continue;
-    }
-    ped.heading = Math.atan2(dx / dist, dz / dist);
-    ped.x += Math.sin(ped.heading) * speed * dt;
-    ped.z += Math.cos(ped.heading) * speed * dt;
-    clampToCity(ped);
-    ped.y = groundHeight(ped.x, ped.z);
-    // A fast car (or the player on foot at a run) that touches a ped knocks them down.
-    if (threat && threatSpeed > 4) {
-      const tdx = ped.x - threat.x;
-      const tdz = ped.z - threat.z;
-      if (tdx * tdx + tdz * tdz < 4.5) {
-        ped.state = 'down';
-        ped.downTimer = 6;
-        hit.push(i);
-      }
-    }
-  }
-  return hit;
 }

@@ -1,240 +1,261 @@
-// GLASSLINE — mission smoke test (missions 2-7 + the busted path).
-// Plays mission 1, then drives every later mission with real inputs (E to
-// enter/steal, hold E to interact, driving to markers) and teleports only to
-// move the player between far-apart spots. Run: node missions-test.cjs
-const { spawn } = require('child_process');
-const path = require('path');
-const puppeteer = require(path.join(__dirname, '..', '..', 'bring-the-humans-work', 'node_modules', 'puppeteer'));
+// GLASSLINE headless playthrough — serves game/ and drives it in
+// Chrome for Testing via puppeteer, using the debug API on
+// window.__glassline. Checks: missions 1-7 completable, LEAK ending
+// reachable, the busted path, save/Continue, zero page/console errors.
+// Run: node missions-test.cjs   (exit 0 = all pass)
+const http = require('node:http');
+const { readFileSync, existsSync } = require('node:fs');
+const { join, extname } = require('node:path');
+const puppeteer = require('/home/hatch/workspace/makefun/bring-the-humans-work/node_modules/puppeteer');
 
-const REPO = __dirname;
-const BASE = 'http://localhost:8080';
+const GAME_DIR = join(__dirname, 'game');
+const PORT = 8901;
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg' };
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function waitForServer(tries = 40) {
-  for (let i = 0; i < tries; i++) {
-    try {
-      const res = await fetch(BASE + '/index.html');
-      if (res.ok) return;
-    } catch { /* not up yet */ }
-    await sleep(300);
-  }
-  throw new Error('server did not come up');
+let failures = 0;
+function check(cond, label) {
+  console.log(`${cond ? 'ok' : 'FAIL'} - ${label}`);
+  if (!cond) failures++;
 }
 
-(async () => {
-  const server = spawn('node', ['serve.ts', '--port', '8080'], { cwd: REPO, stdio: 'pipe' });
-  const errors = [];
-  const failures = [];
-  const check = (name, ok, extra = '') => {
-    console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${extra ? ' — ' + extra : ''}`);
-    if (!ok) failures.push(name);
-  };
-  const S = (fn) => `(() => { const s = window.__glassline.state; return (${fn})(s); })()`;
-  try {
-    await waitForServer();
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-gpu', '--hide-scrollbars', '--force-device-scale-factor=1', '--autoplay-policy=no-user-gesture-required', '--enable-unsafe-swiftshader'],
+function serve() {
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      const path = decodeURIComponent(req.url.split('?')[0]);
+      const file = join(GAME_DIR, path === '/' ? 'index.html' : path);
+      if (!file.startsWith(GAME_DIR) || !existsSync(file)) { res.writeHead(404); res.end('not found'); return; }
+      res.writeHead(200, { 'content-type': MIME[extname(file)] || 'application/octet-stream' });
+      res.end(readFileSync(file));
     });
+    server.listen(PORT, () => resolve(server));
+  });
+}
+
+async function main() {
+  const server = await serve();
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox', '--enable-unsafe-swiftshader', '--window-size=1280,800'],
+    defaultViewport: { width: 1280, height: 800 },
+  });
+  const errors = [];
+  try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 720, deviceScaleFactor: 1 });
     page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
     page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
 
-    await page.goto(BASE + '/?seed=1', { waitUntil: 'load', timeout: 60000 });
-    await sleep(1200);
-    await page.click('#title-new');
-    await sleep(500);
+    await page.goto(`http://localhost:${PORT}/index.html`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForFunction(() => window.__glassline, { timeout: 20000 });
+    check(true, 'game boots, __glassline debug API present');
 
-    // Teleport helpers via the debug handle.
-    const tp = async (x, z) => page.evaluate((x, z) => {
-      const s = window.__glassline.state;
-      const t = s.player.car || s.player;
-      t.x = x; t.z = z; t.speed = 0;
-      s.player.x = x; s.player.z = z;
-    }, x, z);
-    const tpFoot = async (x, z) => page.evaluate((x, z) => {
-      const s = window.__glassline.state;
-      if (s.player.car) { s.player.car.speed = 0; }
-      s.player.car = null; s.player.onFoot = true;
-      s.player.x = x; s.player.z = z; s.player.y = 0;
-    }, x, z);
-    const missionName = async () => page.evaluate(() => window.__glassline.state.runner.current() ? window.__glassline.state.runner.current().name : 'ALL DONE');
-    const stepText = async () => page.evaluate(() => window.__glassline.state.runner.step().text);
-    // Headless SwiftShader runs ~1 FPS and the loop caps game time at 0.25 s
-    // per frame, so a 2 s hold can take 8+ s of real time. Hold E until the
-    // mission step actually changes (or 20 s elapse).
-    const holdEUntilStepChanges = async () => {
-      const before = await stepText();
-      await page.keyboard.down('KeyE');
-      for (let i = 0; i < 20; i++) {
-        await sleep(1000);
-        if ((await stepText()) !== before) break;
-      }
-      await page.keyboard.up('KeyE');
-      return stepText();
+    const evalJs = (fn, ...args) => page.evaluate(fn, ...args);
+    const state = () => evalJs(() => window.__glassline.state());
+    const clickAct = async (act) => {
+      await page.evaluate((a) => {
+        const b = document.querySelector(`[data-act="${a}"]`);
+        if (b) b.click();
+      }, act);
     };
-    const completeVisible = async () => page.evaluate(() => !document.getElementById('complete-screen').classList.contains('hidden'));
-    const clickContinue = async () => { await page.click('#complete-continue'); await sleep(400); };
 
-    // ---- Mission 1 (same path as test.cjs) ----
-    await page.evaluate(() => {
-      const s = window.__glassline.state;
-      s.player.x = s.missionVehicle.x + 2;
-      s.player.z = s.missionVehicle.z;
-    });
-    await page.keyboard.press('KeyE');
-    await sleep(400);
-    await tp(30, -144);
-    await sleep(800);
-    check('mission 1 done', (await missionName()).includes('Lights Out'));
-    await clickContinue();
+    // Start screen offers a new game.
+    check(await page.evaluate(() => !!document.querySelector('[data-act="start"]')), 'start screen shows Mulai');
+    await clickAct('freeroam');
+    await sleep(500);
+    check((await state()) === 'playing', 'free roam starts (state playing)');
 
-    // ---- Mission 2: substation on foot (hold E), then escape ----
-    await page.keyboard.press('KeyE'); // exit the van
-    await sleep(300);
-    await tpFoot(120, 120);
-    await sleep(300);
-    const m2step = await holdEUntilStepChanges();
-    check('mission 2 interact relights district', m2step.includes('Sluice marker'), m2step);
-    await tpFoot(-90, 90);
-    await sleep(800);
-    check('mission 2 done', (await missionName()).includes('The Witness'));
-    check('mission 2 paid $500', (await page.evaluate(() => window.__glassline.state.money)) >= 900);
-    await clickContinue();
+    // Drive: give the player a car, hold W, it must move.
+    const before = await evalJs(() => { const g = window.__glassline.G; window.__glassline.giveCar('sport'); return { x: g.player.x, z: g.player.z }; });
+    await page.keyboard.down('KeyW');
+    await sleep(4000);
+    await page.keyboard.up('KeyW');
+    const after = await evalJs(() => { const g = window.__glassline.G; return { x: g.player.x, z: g.player.z, speed: Math.abs(g.player.car ? g.player.car.speed : 0) }; });
+    // Headless SwiftShader runs only a few frames per second and the
+    // game clamps dt, so game time runs much slower than real time:
+    // judge the drive by speed (the car accelerates) and any movement.
+    check(after.speed > 5 && Math.hypot(after.x - before.x, after.z - before.z) > 2, `car drives (moved ${Math.hypot(after.x - before.x, after.z - before.z).toFixed(1)}m, speed ${after.speed.toFixed(1)})`);
+    // Stop the car so the next steps are deterministic.
+    await evalJs(() => { const g = window.__glassline.G; if (g.player.car) g.player.car.speed = 0; });
 
-    // ---- Mission 3: pick up Mara, cross the overpass ----
-    await tpFoot(-62, 156);
-    await sleep(300);
-    await page.keyboard.press('KeyE'); // steal the parked sedan
-    await sleep(400);
-    await tp(-150, -60); // stop next to Mara
-    await sleep(6000); // Mara walks to the car
-    const picked = await page.evaluate(() => ({ passenger: window.__glassline.state.passenger, mara: window.__glassline.state.mara.state, step: window.__glassline.state.runner.step().text }));
-    console.log('pickup:', JSON.stringify(picked));
-    check('Mara picked up', picked.passenger === true, JSON.stringify(picked));
-    await tp(-60, -90); // safehouse
-    await sleep(800);
-    check('mission 3 done', (await missionName()).includes('Borrowed Authority'));
-    await clickContinue();
-
-    // ---- Mission 4: steal the patrol car, drive the gate (disguised) ----
-    await page.keyboard.press('KeyE'); // exit the car
-    await sleep(300);
-    await tpFoot(58, -30);
-    await sleep(300);
-    await page.keyboard.press('KeyE'); // steal the patrol car
-    await sleep(400);
-    const m4 = await page.evaluate(() => ({ inCar: !window.__glassline.state.player.onFoot, kind: window.__glassline.state.player.car && window.__glassline.state.player.car.kind, disguised: window.__glassline.state.disguised, step: window.__glassline.state.runner.step().text }));
-    console.log('mission 4 steal:', JSON.stringify(m4));
-    check('patrol car stolen', m4.inCar && m4.kind === 'patrol');
-    check('disguised in the patrol car', m4.disguised === true);
-    await tp(30, -30); // traffic-control gate
-    await sleep(800);
-    check('mission 4 done', (await missionName()).includes('Dead Air'));
-    await clickContinue();
-
-    // ---- Mission 5: rooftop drive on foot, helicopter, escape ----
-    await page.keyboard.press('KeyE'); // exit the patrol car
-    await sleep(300);
-    await tpFoot(0, -90);
-    await sleep(300);
-    const m5step = await holdEUntilStepChanges();
-    const m5 = await page.evaluate(() => ({ wanted: window.__glassline.state.police.wanted, heli: window.__glassline.state.police.heli.active, step: window.__glassline.state.runner.step().text }));
-    console.log('mission 5 after grab:', JSON.stringify(m5));
-    check('footage grabbed, wanted 3 + heli', m5.wanted >= 3 && m5.heli === true && m5step.includes('150 m'), JSON.stringify(m5));
-    await tpFoot(-122, -30);
-    await sleep(300);
-    await page.keyboard.press('KeyE'); // steal a parked car to escape in
-    await sleep(400);
-    await tp(150, 60); // 150+ m clear of the rooftop
-    await sleep(800);
-    check('mission 5 done', (await missionName()).includes('Flood Channel'));
-    await clickContinue();
-
-    // ---- Mission 6: flood channel, timed ----
-    await tp(-150, 120); // channel entry
-    await sleep(800);
-    const m6 = await page.evaluate(() => ({ step: window.__glassline.state.runner.step().text, water: window.__glassline.state.waterLevel }));
-    console.log('mission 6 timed:', JSON.stringify(m6));
-    check('channel timed step started', m6.step.includes('tunnel exit'), m6.step);
-    await tp(-90, 120); // tunnel exit
-    await sleep(800);
-    check('mission 6 done', (await missionName()).includes('The Choice'));
-    await clickContinue();
-
-    // ---- Mission 7: choose the press (LEAK ending) ----
-    await tp(90, -60); // press HQ
-    await sleep(800);
-    // The ending screen arrives via the mission-complete event, one frame
-    // after the choice — poll for it (headless runs ~1 FPS).
-    let ending = null;
-    for (let i = 0; i < 10; i++) {
-      ending = await page.evaluate(() => ({
-        ending: window.__glassline.state.ending,
-        endingVisible: !document.getElementById('ending-screen').classList.contains('hidden'),
-        endingText: document.getElementById('ending-text').textContent,
-      }));
-      if (ending.endingVisible) break;
-      await sleep(1000);
-    }
-    console.log('ending:', JSON.stringify(ending));
-    check('ending screen shown', ending.endingVisible);
-    check('LEAK ending chosen', (ending.endingText || '').includes('THE LEAK'), ending.endingText);
-    check('all 7 missions completed', (await page.evaluate(() => window.__glassline.state.completed)).length === 7);
-    await page.click('#ending-continue');
-    await sleep(400);
-
-    // Regression: after the story ends there is no mission to restart — the
-    // pause menu must hide the restart button (it used to call startMission(7)
-    // and crash on MISSIONS[7].steps).
-    await page.keyboard.press('KeyP');
-    await sleep(400);
-    const restartHidden = await page.evaluate(() => document.getElementById('pause-restart').classList.contains('hidden'));
-    check('restart button hidden after the story ends', restartHidden === true);
-    await page.keyboard.press('KeyP');
-    await sleep(400);
-
-    // ---- Busted path (free roam): cornered on foot by the police ----
-    const moneyBefore = await page.evaluate(() => window.__glassline.state.money);
-    await page.keyboard.press('KeyE'); // exit the car
-    await sleep(300);
-    await page.evaluate(() => {
-      const s = window.__glassline.state;
-      s.police.wanted = 2;
-    });
-    await sleep(3000); // let the wanted level spawn its cars
-    await page.evaluate(() => {
-      const s = window.__glassline.state;
-      if (s.police.cars.length > 0) {
-        let best = s.police.cars[0];
-        for (const c of s.police.cars) {
-          if (Math.hypot(c.x - s.player.x, c.z - s.player.z) < Math.hypot(best.x - s.player.x, best.z - s.player.z)) best = c;
+    // Busted path: wanted 1, on foot, then keep a patrol pinned next
+    // to the player (zero its speed each tick) until the bust lands.
+    // Headless renders slowly, so game time runs ~half speed: allow 12s.
+    await evalJs(() => { const g = window.__glassline.G; if (g.player.car) g.player.car.speed = 0; window.__glassline.exitCar(); });
+    await evalJs(() => { const g = window.__glassline.G; g.police.setWanted(1); });
+    await sleep(1500);
+    let busted = false;
+    for (let i = 0; i < 60; i++) {
+      await evalJs(() => {
+        const g = window.__glassline.G;
+        const p = g.police.patrols[0];
+        if (p) {
+          p.speed = 0;
+          g.player.x = p.x + 2; g.player.z = p.z; g.player.speed = 0;
         }
-        best.x = s.player.x + 3; best.z = s.player.z + 3; best.speed = 0;
-      }
-    });
-    // The bust meter needs 3 s of game time (~12 s real at ~1 FPS); poll.
-    let busted = null;
-    for (let i = 0; i < 20; i++) {
-      await sleep(1000);
-      busted = await page.evaluate(() => ({
-        wanted: window.__glassline.state.police.wanted,
-        atStart: Math.hypot(window.__glassline.state.player.x + 30, window.__glassline.state.player.z - 150) < 5,
-        money: window.__glassline.state.money,
-      }));
-      if (busted.atStart) break;
+      });
+      await sleep(200);
+      if ((await state()) === 'busted') { busted = true; break; }
     }
-    console.log('busted:', JSON.stringify(busted), 'money before:', moneyBefore);
-    check('busted respawns at start, wanted cleared', busted.atStart && busted.wanted === 0, JSON.stringify(busted));
-    check('busted costs $200', busted.money === Math.max(0, moneyBefore - 200), `$${busted.money} vs $${moneyBefore}`);
+    check(busted, 'busted path triggers when a patrol sits on a slow player');
+    await clickAct('retry');
+    await sleep(500);
+    check((await state()) === 'playing', 'retry after busted returns to play');
 
-    await browser.close();
-    console.log('page/console errors:', errors.length ? errors : 'none');
-    check('zero page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+    // Missions 1-7, driving the real step checks via teleport + the
+    // game's own enter/exit car actions.
+    const stepInfo = () => evalJs(() => {
+      const g = window.__glassline.G;
+      const cur = g.missions.current;
+      if (!cur) return null;
+      const s = cur.steps[cur.step];
+      return s ? { id: cur.def.id, index: cur.step, kind: s.kind || 'reach', text: s.text, target: s.target || null, duration: s.duration || 0 } : null;
+    });
+    const advanceStep = async (info) => {
+      const cur = () => evalJs(() => {
+        const c = window.__glassline.G.missions.current;
+        return c ? { id: c.def.id, index: c.step } : null;
+      });
+      const start = await cur();
+      if (!start) return 'done';
+      // Choice steps: pick LEAK.
+      if (info.kind === 'choice') {
+        await evalJs(() => window.__glassline.choose('leak'));
+        await sleep(600);
+        return (await cur()) === null ? 'done' : 'advanced';
+      }
+      // Remember the car the player arrived in: for "(E)" enter steps
+      // it must be removed before entering, or enterCar grabs it
+      // (nearest) instead of the target car.
+      const isEnterStep = info.text.includes('(E)');
+      await evalJs(() => {
+        const g = window.__glassline.G;
+        window.__oldCarId = g.player.car ? g.player.car.id : null;
+      });
+      // Wait (polling) for the step to advance after a strategy.
+      // Channel steps need their full hold time; headless rendering
+      // runs game time at roughly half speed, so allow 12s for them.
+      const waitForAdvance = async (timeoutMs) => {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          await sleep(400);
+          const now = await cur();
+          if (!now) return 'done';
+          if (now.id !== start.id || now.index !== start.index) return 'advanced';
+          const s = await state();
+          if (s === 'busted' || s === 'failed') return s + '-retry';
+        }
+        return 'timeout';
+      };
+      // Read the step's target fresh each time: a target car can be
+      // pushed by collisions, so a snapshot from the start goes stale.
+      const freshTarget = () => evalJs(() => {
+        const g = window.__glassline.G;
+        const cur = g.missions.current;
+        if (!cur) return null;
+        const s = cur.steps[cur.step];
+        return s && s.target ? { x: s.target.x, z: s.target.z } : null;
+      });
+      const strategies = [
+        async () => { // A: teleport to the target as-is
+          const t = await freshTarget();
+          if (t) await evalJs((tt) => window.__glassline.teleport(tt.x, tt.z), t);
+        },
+        async () => { // B: get out, teleport on foot
+          await evalJs(() => window.__glassline.exitCar());
+          const t = await freshTarget();
+          if (t) await evalJs((tt) => window.__glassline.teleport(tt.x, tt.z), t);
+        },
+        async () => { // C: get out, drop the car the player arrived
+          // in (for "(E)" steps it would win the nearest-car pick),
+          // teleport, enter the car there
+          await evalJs((enter) => {
+            const g = window.__glassline.G;
+            if (enter && window.__oldCarId != null) {
+              const old = g.vehicles.cars.find((c) => c.id === window.__oldCarId);
+              if (old) g.vehicles.remove(old);
+            }
+            window.__glassline.exitCar();
+          }, isEnterStep);
+          const t = await freshTarget();
+          if (t) await evalJs((tt) => window.__glassline.teleport(tt.x, tt.z), t);
+          await evalJs(() => window.__glassline.enterCar());
+        },
+        async () => { // D: take a fresh car, teleport to the target
+          await evalJs(() => window.__glassline.giveCar('sport'));
+          const t = await freshTarget();
+          if (t) await evalJs((tt) => window.__glassline.teleport(tt.x, tt.z), t);
+        },
+      ];
+      const timeout = info.kind === 'channel' ? 12000 : 3000;
+      for (const run of strategies) {
+        await run();
+        const res = await waitForAdvance(timeout);
+        if (res !== 'timeout') return res;
+      }
+      return 'stuck';
+    };
+
+    for (let id = 1; id <= 7; id++) {
+      await evalJs(() => { const g = window.__glassline.G; if (g.player.car) g.player.car.speed = 0; });
+      await evalJs((m) => window.__glassline.startMission(m), id);
+      await sleep(400);
+      let guard = 0;
+      let missionDone = false;
+      while (guard++ < 80) {
+        const info = await stepInfo();
+        if (!info) { missionDone = true; break; }
+        if ((await state()) === 'busted' || (await state()) === 'failed') {
+          await clickAct('retry');
+          await sleep(600);
+          continue;
+        }
+        const res = await advanceStep(info);
+        console.log(`  mission ${id} step ${info.index} (${info.kind}): ${res}`);
+        if (res === 'done') { missionDone = true; break; }
+        if (res === 'stuck') break;
+        // 'advanced' / 'busted-retry' / 'failed-retry': keep going.
+      }
+      check(missionDone, `mission ${id} completes`);
+      if (!missionDone) break;
+      const done = await evalJs(() => window.__glassline.G.missions.doneCount);
+      check(done >= id, `missions.doneCount is ${done} after mission ${id}`);
+      await sleep(300);
+    }
+
+    // LEAK ending.
+    check((await state()) === 'ending', 'mission 7 choice reaches the ending screen');
+    const ending = await evalJs(() => ({ ending: window.__glassline.G.ending, saved: window.__glassline.load().endings }));
+    check(ending.ending === 'leak', 'ending is LEAK');
+    check(ending.saved.includes('leak'), 'LEAK ending saved to localStorage');
+
+    // Save / Continue: reload, the save must still be there.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => window.__glassline, { timeout: 20000 });
+    const saved = await evalJs(() => window.__glassline.load());
+    check(saved.missionsDone === 7, `save persists after reload (missionsDone ${saved.missionsDone})`);
+    check(saved.money > 120, `money grew from missions ($${saved.money})`);
+    check(await page.evaluate(() => !!document.querySelector('[data-act="continue"]')), 'menu offers Lanjutkan after a save');
+    await clickAct('continue');
+    await sleep(500);
+    check((await state()) === 'playing', 'Continue resumes play');
+    const curMission = await evalJs(() => { const c = window.__glassline.G.missions.current; return c ? c.def.id : null; });
+    check(curMission === 7, `Continue resumes at mission 7 (got ${curMission})`);
+
+    // Screenshot scenes render without errors.
+    for (const shot of [1, 2, 3, 4]) {
+      await page.goto(`http://localhost:${PORT}/index.html?shot=${shot}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await sleep(1500);
+      check((await state()) === 'shot', `?shot=${shot} renders in shot mode`);
+    }
+
+    check(errors.length === 0, `zero page/console errors (${errors.length} seen)`);
+    if (errors.length) errors.slice(0, 10).forEach((e) => console.log('  error:', e));
   } finally {
-    server.kill();
+    await browser.close();
+    server.close();
   }
-  console.log(failures.length ? `FAILURES: ${failures.join(', ')}` : 'ALL MISSION CHECKS PASSED');
-  process.exit(failures.length ? 1 : 0);
-})().catch((e) => { console.error('FATAL', e); process.exit(1); });
+  console.log(failures === 0 ? '\nmissions-test.cjs: ALL PASS' : `\nmissions-test.cjs: ${failures} FAILURE(S)`);
+  process.exit(failures === 0 ? 0 : 1);
+}
+
+main().catch((e) => { console.error('FAIL:', e); process.exit(1); });

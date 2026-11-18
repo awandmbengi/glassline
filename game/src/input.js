@@ -1,95 +1,85 @@
-// Keyboard and pointer input. Held keys are read every frame; one-shot presses
-// (confirm, pause, interact, punch, horn, radio, mute) are queued as bit flags
-// and taken once by the loop, so a press between two frames is never lost or
-// counted twice. A key released while the tab is hidden never sends keyup:
-// everything is released on blur.
+// Keyboard + mouse input. Tracks held keys, edge-triggered presses
+// (consume on read so one press fires one action), and mouse drag for
+// a small camera orbit. Ignores input while a text field has focus.
+export function createInput() {
+  const held = new Set();
+  const pressed = new Set();
+  let dragX = 0;
+  let dragging = false;
+  let lastX = 0;
+  let enabled = true;
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
-export const ACTION_INTERACT = 4;
-export const ACTION_PUNCH = 8;
-export const ACTION_HORN = 16;
-export const ACTION_RADIO = 32;
-export const ACTION_MUTE = 64;
-
-const UP = new Set(['ArrowUp', 'KeyW']);
-const DOWN = new Set(['ArrowDown', 'KeyS']);
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
-const INTERACT = new Set(['KeyE']);
-const PUNCH = new Set(['KeyF']);
-const RADIO = new Set(['KeyR']);
-const MUTE = new Set(['KeyM']);
-
-export function createInput(target) {
-  const held = { up: false, down: false, left: false, right: false, interact: false };
-  let actions = 0;
-
-  function releaseAll() {
-    held.up = held.down = held.left = held.right = held.interact = false;
+  function isTypingTarget(e) {
+    const t = e.target;
+    return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
   }
+  function keyOf(e) {
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    return k;
+  }
+  function onDown(e) {
+    if (!enabled || isTypingTarget(e)) return;
+    const k = keyOf(e);
+    if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
+    if (!held.has(k)) pressed.add(k);
+    held.add(k);
+  }
+  function onUp(e) {
+    held.delete(keyOf(e));
+  }
+  function onBlur() {
+    held.clear();
+    pressed.clear();
+    dragging = false;
+  }
+  function onMouseDown(e) {
+    if (!enabled) return;
+    dragging = true;
+    lastX = e.clientX;
+  }
+  function onMouseMove(e) {
+    if (!dragging) return;
+    dragX += e.clientX - lastX;
+    lastX = e.clientX;
+  }
+  function onMouseUp() { dragging = false; }
 
-  window.addEventListener('keydown', (event) => {
-    if (UP.has(event.code)) held.up = true;
-    else if (DOWN.has(event.code)) held.down = true;
-    else if (LEFT.has(event.code)) held.left = true;
-    else if (RIGHT.has(event.code)) held.right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else if (INTERACT.has(event.code)) {
-      held.interact = true;
-      if (!event.repeat) actions |= ACTION_INTERACT;
-    } else if (PUNCH.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PUNCH;
-    } else if (RADIO.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_RADIO;
-    } else if (MUTE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_MUTE;
-    } else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (UP.has(event.code)) held.up = false;
-    else if (DOWN.has(event.code)) held.down = false;
-    else if (LEFT.has(event.code)) held.left = false;
-    else if (RIGHT.has(event.code)) held.right = false;
-    else if (INTERACT.has(event.code)) held.interact = false;
-  });
-  window.addEventListener('blur', releaseAll);
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
+  window.addEventListener('keydown', onDown);
+  window.addEventListener('keyup', onUp);
+  window.addEventListener('blur', onBlur);
+  window.addEventListener('mousedown', onMouseDown);
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('mouseup', onMouseUp);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) onBlur();
   });
 
   return {
-    /** Throttle: 1 forward, -1 reverse, 0 none. */
-    throttle() {
-      return (held.up ? 1 : 0) - (held.down ? 1 : 0);
+    // Held-state queries (WASD + arrows).
+    get forward() { return held.has('w') || held.has('arrowup'); },
+    get back() { return held.has('s') || held.has('arrowdown'); },
+    get left() { return held.has('a') || held.has('arrowleft'); },
+    get right() { return held.has('d') || held.has('arrowright'); },
+    get run() { return held.has('shift'); },
+    get handbrake() { return held.has(' '); },
+    isHeld(k) { return held.has(k); },
+    // Edge trigger: true once per physical press.
+    wasPressed(k) {
+      const key = k.length === 1 ? k.toLowerCase() : k;
+      if (pressed.has(key)) { pressed.delete(key); return true; }
+      return false;
     },
-    /** Steering: -1 left, 1 right, 0 none. */
-    steer() {
-      return (held.right ? 1 : 0) - (held.left ? 1 : 0);
-    },
-    /** Walk direction in camera space: {x, z} each -1, 0 or 1. */
-    walk() {
-      return { x: (held.right ? 1 : 0) - (held.left ? 1 : 0), z: (held.down ? 1 : 0) - (held.up ? 1 : 0) };
-    },
-    anyHeld() {
-      return held.up || held.down || held.left || held.right;
-    },
-    /** True while E is held down (hold-to-interact). */
-    interactHeld() {
-      return held.interact;
-    },
-    releaseAll,
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
+    // Mouse orbit, consumed by the camera each frame.
+    consumeDrag() { const d = dragX; dragX = 0; return d; },
+    endFrame() { pressed.clear(); },
+    setEnabled(v) { enabled = v; if (!v) onBlur(); },
+    detach() {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
     },
   };
 }

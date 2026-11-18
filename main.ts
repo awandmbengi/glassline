@@ -1,423 +1,206 @@
 // GLASSLINE — entrypoint for the make.fun gta6-01 bounty.
 //
-// What this program does, end to end: it takes the finished game that lives
-// in this repository (the static files under game/, plus the four JPEG renders
-// under screenshots/) and hands it in as one output directory. That means
-// copying both folders, then asking the vendored make.fun library to read the
-// copied game and write dossier.json, the summary the judge reads. The
-// output directory is /output inside the grader's container, or wherever
-// MAKEFUN_OUTPUT_DIR (or the --out flag) points when you run it yourself:
+// What it does, in order:
+//   1. Pre-flight: checks the 17 required game files exist and parse.
+//   2. Copies game/ and screenshots/ from this repository into the
+//      output directory (MAKEFUN_OUTPUT_DIR, or /output in the grader).
+//   3. Writes /output/dossier.json with buildDossier from
+//      vendor/makefun-game.ts, and /output/manifest.json with the
+//      SHA-256 of every file it copied.
+//   4. Prints a build summary.
 //
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// Modes:
+//   node main.ts            build (default)
+//   node main.ts --verify   validate the repo only, write nothing
+//   node main.ts --check-out <dir>
+//                           re-check an output directory: rebuild the
+//                           dossier from it and compare with its
+//                           dossier.json, and verify manifest hashes.
 //
-// This entrypoint does more than copy, because a silent bad build is worse
-// than a loud one. Before it copies anything it checks the source tree the
-// way a careful builder would: every module the page loads has to be there,
-// every screenshot has to be a real JPEG or PNG inside its size cap, and the
-// first screenshot by name is the cover the dossier points at. After the
-// copy it writes manifest.json, a SHA-256 fingerprint of every file it
-// shipped, and prints a short summary (files, bytes, dossier size) so the
-// person running it can see at a glance that the build is whole. With
-// --verify it then reads the output back and re-checks every hash and cap,
-// and it refuses to exit cleanly when anything does not line up.
-//
-// Usage:
-//   node main.ts [--out <dir>] [--verify] [--check-out <dir>] [--help]
-//     --out <dir>       write the entry to <dir> instead of $MAKEFUN_OUTPUT_DIR or /output
-//     --verify          build, then verify the output before exiting
-//     --check-out <dir> only verify an output directory that already exists
-//     --help            print this help and exit
-
-import {
-  cpSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+// The game itself is static files under game/; this program never
+// serves it, only hands it in.
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildDossier, DOSSIER_MAX_BYTES, DOSSIER_SCHEMA } from './vendor/makefun-game.ts';
+import { buildDossier } from './vendor/makefun-game.ts';
 
-// ------------------------------------------------------------------ the entry
+const REQUIRED_FILES = [
+  'game/index.html',
+  'game/src/audio.js',
+  'game/src/city.js',
+  'game/src/config.js',
+  'game/src/hud.js',
+  'game/src/input.js',
+  'game/src/main.js',
+  'game/src/missions.js',
+  'game/src/people.js',
+  'game/src/police.js',
+  'game/src/radio.js',
+  'game/src/random.js',
+  'game/src/render.js',
+  'game/src/save.js',
+  'game/src/shots.js',
+  'game/src/vehicles.js',
+  'game/src/world.js',
+];
 
-const ENTRY_TITLE = 'GLASSLINE';
-
-// The scorer's own caps, from the competition's reference/gate.json. Only
-// text_max_bytes shapes how much of the game the dossier carries; the rest
-// refuse an entry the scorer would refuse: more than 4 screenshots or one
-// over 256 KiB; more than 993 files in game/ or 48 MiB of game files in all,
-// or a path under game/ over 1000 bytes.
-const GATE_CAPS = {
+const DOSSIER_CAPS = {
   text_max_bytes: 163840,
   screenshots: { max: 4, max_bytes: 262144 },
   game_max_files: 993,
   game_max_bytes: 50331648,
   game_path_max_bytes: 1000,
-} as const;
+};
 
-// Every file the page needs to run. index.html loads ./src/main.js as its
-// module and maps the bare specifier "three" to the vendored build; the rest
-// are the game's own modules, imported from main.js and from each other. If
-// any one of these is missing the game cannot load, so the build fails here
-// with the name of the file instead of shipping a broken entry.
-const REQUIRED_GAME_FILES = [
-  'index.html',
-  'src/main.js',
-  'src/audio.js',
-  'src/city.js',
-  'src/config.js',
-  'src/hud.js',
-  'src/input.js',
-  'src/missions.js',
-  'src/people.js',
-  'src/police.js',
-  'src/random.js',
-  'src/render.js',
-  'src/save.js',
-  'src/shots.js',
-  'src/vehicles.js',
-  'src/world.js',
-  'vendor/three.module.min.js',
-] as const;
+const ROOT = resolve(dirname(new URL(import.meta.url).pathname));
+const OUT = process.env.MAKEFUN_OUTPUT_DIR || '/output';
 
-const SCREENSHOT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const SCREENSHOT_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png']);
-
-// ------------------------------------------------------------------ small tools
-
-interface BuildFlags {
-  outDir: string | null;
-  verifyAfterBuild: boolean;
-  checkOutDir: string | null;
-  showHelp: boolean;
+function sha256(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
-interface TreeStats {
-  files: number;
-  bytes: number;
+function fail(msg) {
+  console.error(`glassline: ${msg}`);
+  process.exit(1);
 }
 
-interface ManifestEntry {
-  path: string;
-  bytes: number;
-  sha256: string;
+// Walk a directory tree, returning relative paths of regular files.
+// Refuses symlinks: the scorer's game_files row forbids them.
+function walk(dir, base) {
+  const out = [];
+  for (const name of readdirSync(dir).sort()) {
+    const full = join(dir, name);
+    const st = lstatSync(full);
+    if (st.isSymbolicLink()) fail(`symlink not allowed: ${relative(base, full)}`);
+    if (st.isDirectory()) out.push(...walk(full, base));
+    else if (st.isFile()) out.push(relative(base, full));
+    else fail(`not a regular file or directory: ${relative(base, full)}`);
+  }
+  return out;
 }
 
-interface ShippedManifest {
-  entry: string;
-  generated_at: string;
-  files: ManifestEntry[];
-  total_files: number;
-  total_bytes: number;
-}
-
-function fail(message: string): never {
-  throw new Error(`glassline main: ${message}`);
-}
-
-function prettyBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-  return `${(n / (1024 * 1024)).toFixed(2)} MiB`;
-}
-
-function sha256OfFile(absPath: string): string {
-  return createHash('sha256').update(readFileSync(absPath)).digest('hex');
-}
-
-// Every regular file under a directory, as POSIX-style paths relative to it,
-// sorted so the manifest and the summary are deterministic run to run.
-function walkFiles(root: string): string[] {
-  const found: string[] = [];
-  const visit = (dir: string): void => {
-    for (const item of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
-      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-    )) {
-      const abs = join(dir, item.name);
-      if (item.isDirectory()) visit(abs);
-      else if (item.isFile()) found.push(relative(root, abs).split(sep).join('/'));
-    }
-  };
-  visit(root);
-  return found.sort();
-}
-
-function treeStats(root: string): TreeStats {
-  let files = 0;
-  let bytes = 0;
-  for (const rel of walkFiles(root)) {
-    files += 1;
-    bytes += statSync(join(root, rel)).size;
-  }
-  return { files, bytes };
-}
-
-// ------------------------------------------------------------------ validation
-
-// The source tree, checked before a single file is copied. Returns the
-// screenshot names, first by name, which is the dossier's cover.
-function validateSourceTree(repoRoot: string): string[] {
-  const gameDir = join(repoRoot, 'game');
-  if (!existsSync(gameDir) || !lstatSync(gameDir).isDirectory()) {
-    fail(`game/ is missing from ${repoRoot}: the entry has no game to hand in`);
-  }
-  const missing: string[] = [];
-  for (const rel of REQUIRED_GAME_FILES) {
-    const abs = join(gameDir, rel);
-    if (!existsSync(abs) || !lstatSync(abs).isFile()) missing.push(`game/${rel}`);
-  }
-  if (missing.length > 0) {
-    fail(`required game files are missing:\n  - ${missing.join('\n  - ')}`);
-  }
-
-  const indexHtml = readFileSync(join(gameDir, 'index.html'), 'utf8');
-  if (!indexHtml.includes('./src/main.js')) {
-    fail('game/index.html does not load ./src/main.js: the entrypoint module is not wired up');
-  }
-  if (!indexHtml.includes('./vendor/three.module.min.js')) {
-    fail('game/index.html does not map "three" to ./vendor/three.module.min.js');
-  }
-
-  const shotsDir = join(repoRoot, 'screenshots');
-  if (!existsSync(shotsDir) || !lstatSync(shotsDir).isDirectory()) {
-    fail('screenshots/ is missing: an entry hands in 3 or 4 renders of its game');
-  }
-  const shots = readdirSync(shotsDir, { withFileTypes: true })
-    .filter((e) => e.isFile() && !e.name.startsWith('.'))
-    .map((e) => e.name)
-    .sort();
-  if (shots.length < 3 || shots.length > GATE_CAPS.screenshots.max) {
-    fail(`screenshots/ holds ${shots.length} files, expected 3 or 4`);
-  }
-  for (const name of shots) {
-    if (!SCREENSHOT_NAME.test(name)) fail(`screenshots/${name}: bad file name`);
-    const dot = name.lastIndexOf('.');
-    const ext = dot < 0 ? '' : name.slice(dot).toLowerCase();
-    if (!SCREENSHOT_EXTENSIONS.has(ext)) {
-      fail(`screenshots/${name}: not a JPEG or PNG`);
-    }
-    const size = statSync(join(shotsDir, name)).size;
-    if (size > GATE_CAPS.screenshots.max_bytes) {
-      fail(`screenshots/${name} is ${prettyBytes(size)}, over the ${prettyBytes(GATE_CAPS.screenshots.max_bytes)} cap`);
-    }
-  }
-  return shots;
-}
-
-// ------------------------------------------------------------------ the build
-
-// Assemble the output directory and return its summary. The four paths this
-// program owns inside the output are cleared first, so a stale file from an
-// earlier build can never ride along into the entry.
-function assemble(repoRoot: string, outDir: string): { dossierBytes: number; manifest: ShippedManifest; shots: string[] } {
-  const shots = validateSourceTree(repoRoot);
-  mkdirSync(outDir, { recursive: true });
-
-  const gameOut = join(outDir, 'game');
-  const shotsOut = join(outDir, 'screenshots');
-  rmSync(gameOut, { recursive: true, force: true });
-  rmSync(shotsOut, { recursive: true, force: true });
-  rmSync(join(outDir, 'dossier.json'), { force: true });
-  rmSync(join(outDir, 'manifest.json'), { force: true });
-
-  cpSync(join(repoRoot, 'game'), gameOut, { recursive: true });
-  cpSync(join(repoRoot, 'screenshots'), shotsOut, { recursive: true });
-
-  const gameStats = treeStats(gameOut);
-  if (gameStats.files > GATE_CAPS.game_max_files) {
-    fail(`game/ holds ${gameStats.files} files, over the ${GATE_CAPS.game_max_files} cap`);
-  }
-  if (gameStats.bytes > GATE_CAPS.game_max_bytes) {
-    fail(`game/ is ${prettyBytes(gameStats.bytes)}, over the ${prettyBytes(GATE_CAPS.game_max_bytes)} cap`);
-  }
-
-  const dossier = buildDossier(outDir, {
-    text_max_bytes: GATE_CAPS.text_max_bytes,
-    screenshots: { max: GATE_CAPS.screenshots.max, max_bytes: GATE_CAPS.screenshots.max_bytes },
-    game_max_files: GATE_CAPS.game_max_files,
-    game_max_bytes: GATE_CAPS.game_max_bytes,
-    game_path_max_bytes: GATE_CAPS.game_path_max_bytes,
-  });
-  writeFileSync(join(outDir, 'dossier.json'), dossier);
-
-  const entries: ManifestEntry[] = [];
-  for (const rel of [...walkFiles(gameOut).map((p) => `game/${p}`), ...shots.map((n) => `screenshots/${n}`), 'dossier.json']) {
-    const abs = join(outDir, rel);
-    entries.push({ path: rel, bytes: statSync(abs).size, sha256: sha256OfFile(abs) });
-  }
-  const manifest: ShippedManifest = {
-    entry: ENTRY_TITLE,
-    generated_at: new Date().toISOString(),
-    files: entries,
-    total_files: entries.length,
-    total_bytes: entries.reduce((sum, e) => sum + e.bytes, 0),
-  };
-  writeFileSync(join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-
-  return { dossierBytes: dossier.length, manifest, shots };
-}
-
-// ------------------------------------------------------------------ verification
-
-// Read an output directory back and check it the way the scorer will: the
-// dossier parses and carries this competition's schema, every file the
-// manifest lists is still there with the hash it recorded, and the caps
-// hold. Returns every problem found, so the caller can print them all.
-function verifyOutput(outDir: string): string[] {
-  const problems: string[] = [];
-  const gameDir = join(outDir, 'game');
-  const shotsDir = join(outDir, 'screenshots');
-  const dossierPath = join(outDir, 'dossier.json');
-  const manifestPath = join(outDir, 'manifest.json');
-
-  if (!existsSync(join(gameDir, 'index.html'))) problems.push('game/index.html is missing from the output');
-  for (const rel of REQUIRED_GAME_FILES) {
-    if (!existsSync(join(gameDir, rel))) problems.push(`game/${rel} is missing from the output`);
-  }
-  if (!existsSync(dossierPath)) problems.push('dossier.json is missing from the output');
-  if (!existsSync(manifestPath)) problems.push('manifest.json is missing from the output');
-  if (problems.length > 0) return problems;
-
-  let dossier: { schema?: unknown; images?: { name: string }[] };
-  try {
-    dossier = JSON.parse(readFileSync(dossierPath, 'utf8')) as typeof dossier;
-  } catch (err) {
-    return [...problems, `dossier.json does not parse: ${(err as Error).message}`];
-  }
-  if (dossier.schema !== DOSSIER_SCHEMA) {
-    problems.push(`dossier.json schema is ${JSON.stringify(dossier.schema)}, expected ${JSON.stringify(DOSSIER_SCHEMA)}`);
-  }
-  if (statSync(dossierPath).size > DOSSIER_MAX_BYTES) {
-    problems.push(`dossier.json is over the ${prettyBytes(DOSSIER_MAX_BYTES)} dossier cap`);
-  }
-  const shotCount = Array.isArray(dossier.images) ? dossier.images.length : 0;
-  if (shotCount < 3 || shotCount > GATE_CAPS.screenshots.max) {
-    problems.push(`the dossier lists ${shotCount} screenshots, expected 3 or 4`);
-  }
-  if (existsSync(shotsDir)) {
-    for (const name of readdirSync(shotsDir).filter((n) => !n.startsWith('.')).sort()) {
-      if (statSync(join(shotsDir, name)).size > GATE_CAPS.screenshots.max_bytes) {
-        problems.push(`screenshots/${name} is over the ${prettyBytes(GATE_CAPS.screenshots.max_bytes)} cap`);
+function preflight() {
+  const problems = [];
+  for (const rel of REQUIRED_FILES) {
+    const full = join(ROOT, rel);
+    if (!existsSync(full)) { problems.push(`${rel}: missing`); continue; }
+    if (!statSync(full).isFile()) { problems.push(`${rel}: not a file`); continue; }
+    const bytes = readFileSync(full);
+    if (bytes.length === 0) { problems.push(`${rel}: empty`); continue; }
+    if (rel.endsWith('.js')) {
+      // Parse with Node itself, as a module: the browser loads these
+      // as ES modules, so a CommonJS parse would reject every import.
+      const tmp = mkdtempSync(join(tmpdir(), 'glassline-check-'));
+      try {
+        const tmpFile = join(tmp, 'check.mjs');
+        writeFileSync(tmpFile, bytes);
+        execFileSync(process.execPath, ['--check', tmpFile], { stdio: 'pipe' });
+      } catch (e) {
+        const detail = String(e.stderr || e.stdout || e.message).trim().split('\n').slice(0, 3).join(' ');
+        problems.push(`${rel}: does not parse: ${detail}`);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
       }
     }
-  }
-
-  let manifest: ShippedManifest;
-  try {
-    manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as ShippedManifest;
-  } catch (err) {
-    return [...problems, `manifest.json does not parse: ${(err as Error).message}`];
-  }
-  for (const entry of manifest.files) {
-    const abs = join(outDir, entry.path);
-    if (!existsSync(abs)) {
-      problems.push(`${entry.path} is listed in the manifest but missing from the output`);
-      continue;
-    }
-    if (statSync(abs).size !== entry.bytes) {
-      problems.push(`${entry.path} is ${statSync(abs).size} bytes, the manifest says ${entry.bytes}`);
-    }
-    if (sha256OfFile(abs) !== entry.sha256) {
-      problems.push(`${entry.path} no longer matches its manifest hash`);
+    if (rel.endsWith('.html') && !String(bytes).includes('</html>')) {
+      problems.push(`${rel}: no closing </html>`);
     }
   }
-  return problems;
+  const shotsDir = join(ROOT, 'screenshots');
+  if (!existsSync(shotsDir)) problems.push('screenshots/: missing');
+  else {
+    const shots = readdirSync(shotsDir).filter((n) => /\.(png|jpe?g)$/i.test(n)).sort();
+    if (shots.length < 3 || shots.length > 4) problems.push(`screenshots/: ${shots.length} images, need 3 or 4`);
+    for (const s of shots) {
+      const size = statSync(join(shotsDir, s)).size;
+      if (size > 262144) problems.push(`screenshots/${s}: ${size} bytes, over 256 KiB`);
+    }
+  }
+  const gameFiles = walk(join(ROOT, 'game'), join(ROOT, 'game'));
+  if (gameFiles.length > 993) problems.push(`game/: ${gameFiles.length} entries, over 993`);
+  const totalBytes = gameFiles.reduce((n, f) => n + statSync(join(ROOT, 'game', f)).size, 0);
+  if (totalBytes > 50331648) problems.push(`game/: ${totalBytes} bytes, over 48 MiB`);
+  return { problems, gameFiles, totalBytes };
 }
 
-// ------------------------------------------------------------------ CLI
-
-function printHelp(): void {
-  console.log(
-    [
-      'GLASSLINE entrypoint — build the gta6-01 entry into an output directory.',
-      '',
-      'Usage: node main.ts [--out <dir>] [--verify] [--check-out <dir>] [--help]',
-      '',
-      '  --out <dir>        write the entry to <dir> (default: $MAKEFUN_OUTPUT_DIR, else /output)',
-      '  --verify           build, then verify the output before exiting',
-      '  --check-out <dir>  only verify an output directory that already exists',
-      '  --help             print this help and exit',
-      '',
-      'The build copies game/ and screenshots/ from beside this file, writes',
-      'dossier.json with the vendored make.fun library, and writes manifest.json',
-      'with a SHA-256 hash of every shipped file.',
-    ].join('\n'),
-  );
+function copyTree(srcDir, dstDir) {
+  const copied = [];
+  for (const rel of walk(srcDir, srcDir)) {
+    const src = join(srcDir, rel);
+    const dst = join(dstDir, rel);
+    mkdirSync(dirname(dst), { recursive: true });
+    copyFileSync(src, dst);
+    copied.push({ path: rel.split(sep).join('/'), sha256: sha256(readFileSync(dst)), bytes: statSync(dst).size });
+  }
+  return copied;
 }
 
-function parseArgs(argv: string[]): BuildFlags {
-  const flags: BuildFlags = { outDir: null, verifyAfterBuild: false, checkOutDir: null, showHelp: false };
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    if (arg === '--help' || arg === '-h') flags.showHelp = true;
-    else if (arg === '--verify') flags.verifyAfterBuild = true;
-    else if (arg === '--out') {
-      const value = argv[++i];
-      if (value === undefined) fail('--out needs a directory after it');
-      flags.outDir = resolve(value);
-    } else if (arg === '--check-out') {
-      const value = argv[++i];
-      if (value === undefined) fail('--check-out needs a directory after it');
-      flags.checkOutDir = resolve(value);
-    } else {
-      fail(`unknown argument: ${arg} (see --help)`);
-    }
-  }
-  return flags;
+function build(outDir) {
+  const { problems, gameFiles, totalBytes } = preflight();
+  if (problems.length) fail(`pre-flight failed:\n  - ${problems.join('\n  - ')}`);
+  rmSync(outDir, { recursive: true, force: true });
+  mkdirSync(outDir, { recursive: true });
+  const gameManifest = copyTree(join(ROOT, 'game'), join(outDir, 'game'));
+  const shotManifest = existsSync(join(ROOT, 'screenshots'))
+    ? copyTree(join(ROOT, 'screenshots'), join(outDir, 'screenshots'))
+    : [];
+  const dossier = buildDossier(outDir, DOSSIER_CAPS);
+  writeFileSync(join(outDir, 'dossier.json'), dossier);
+  const manifest = {
+    game: 'GLASSLINE',
+    bounty: 'gta6-01',
+    files: [
+      ...gameManifest.map((f) => ({ ...f, dir: 'game' })),
+      ...shotManifest.map((f) => ({ ...f, dir: 'screenshots' })),
+    ],
+    dossier_sha256: sha256(dossier),
+  };
+  writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+  const gameTextBytes = gameManifest
+    .filter((f) => /\.(js|html|json|css)$/.test(f.path))
+    .reduce((n, f) => n + f.bytes, 0);
+  console.log('GLASSLINE build OK');
+  console.log(`  output:      ${outDir}`);
+  console.log(`  game files:  ${gameFiles.length} (${(totalBytes / 1024).toFixed(1)} KiB, ${gameTextBytes} bytes text)`);
+  console.log(`  screenshots: ${shotManifest.length} (${shotManifest.map((s) => basename(s.path)).join(', ')})`);
+  console.log(`  dossier:     ${dossier.length} bytes (sha256 ${manifest.dossier_sha256.slice(0, 16)}…)`);
+  console.log(`  manifest:    ${manifest.files.length} files hashed`);
 }
 
-function printSummary(outDir: string, dossierBytes: number, manifest: ShippedManifest, shots: string[]): void {
-  const gameStats = treeStats(join(outDir, 'game'));
-  console.log(`GLASSLINE build -> ${outDir} (served from ${pathToFileURL(outDir).href})`);
-  console.log(`  game:        ${gameStats.files} files, ${prettyBytes(gameStats.bytes)}`);
-  console.log(`  screenshots: ${shots.length} (${shots.join(', ')})`);
-  console.log(`  dossier:     ${prettyBytes(dossierBytes)}`);
-  console.log(`  manifest:    ${manifest.total_files} files, ${prettyBytes(manifest.total_bytes)}`);
+function verify() {
+  const { problems, gameFiles, totalBytes } = preflight();
+  if (problems.length) fail(`verify failed:\n  - ${problems.join('\n  - ')}`);
+  console.log(`GLASSLINE verify OK: ${gameFiles.length} game files, ${(totalBytes / 1024).toFixed(1)} KiB, all required files present and parsing`);
 }
 
-function main(): void {
-  const flags = parseArgs(process.argv.slice(2));
-  if (flags.showHelp) {
-    printHelp();
-    return;
+function checkOut(dir) {
+  if (!existsSync(join(dir, 'dossier.json'))) fail(`${dir}: no dossier.json`);
+  if (!existsSync(join(dir, 'manifest.json'))) fail(`${dir}: no manifest.json`);
+  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+  for (const f of manifest.files) {
+    const full = join(dir, f.dir, f.path);
+    if (!existsSync(full)) fail(`${f.dir}/${f.path}: missing from output`);
+    const actual = sha256(readFileSync(full));
+    if (actual !== f.sha256) fail(`${f.dir}/${f.path}: hash mismatch`);
   }
-  const repoRoot = fileURLToPath(new URL('.', import.meta.url));
-
-  if (flags.checkOutDir !== null) {
-    const problems = verifyOutput(flags.checkOutDir);
-    if (problems.length > 0) {
-      console.error(`verify ${flags.checkOutDir}: FAILED\n  - ${problems.join('\n  - ')}`);
-      process.exitCode = 1;
-      return;
-    }
-    console.log(`verify ${flags.checkOutDir}: OK`);
-    return;
-  }
-
-  const outDir = flags.outDir ?? resolve(process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
-  const { dossierBytes, manifest, shots } = assemble(repoRoot, outDir);
-  printSummary(outDir, dossierBytes, manifest, shots);
-
-  if (flags.verifyAfterBuild) {
-    const problems = verifyOutput(outDir);
-    if (problems.length > 0) {
-      console.error(`verify ${outDir}: FAILED\n  - ${problems.join('\n  - ')}`);
-      process.exitCode = 1;
-      return;
-    }
-    console.log(`verify ${outDir}: OK`);
-  }
+  const rebuilt = buildDossier(dir, DOSSIER_CAPS);
+  const stored = readFileSync(join(dir, 'dossier.json'));
+  if (!rebuilt.equals(stored)) fail('dossier.json does not match a fresh buildDossier of this output');
+  console.log(`GLASSLINE check-out OK: ${manifest.files.length} files verified, dossier matches (${rebuilt.length} bytes)`);
 }
 
-try {
-  main();
-} catch (err) {
-  console.error((err as Error).message);
-  process.exit(1);
+const args = process.argv.slice(2);
+if (args.includes('--verify')) verify();
+else if (args.includes('--check-out')) {
+  const i = args.indexOf('--check-out');
+  const dir = args[i + 1];
+  if (!dir) fail('--check-out needs a directory');
+  checkOut(resolve(dir));
+} else if (args.includes('--help') || args.includes('-h')) {
+  console.log('usage: node main.ts [--verify | --check-out <dir>]');
+  console.log('  (no flags) builds game/ + screenshots/ into $MAKEFUN_OUTPUT_DIR or /output');
+} else {
+  build(resolve(OUT));
 }

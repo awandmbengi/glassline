@@ -1,43 +1,70 @@
-// Save: one small localStorage payload — mission progress, money, options.
-// Schema versioned; a corrupt or old payload falls back to a fresh game.
-import { SAVE_KEY } from './config.js';
+// Save / load through localStorage. Small payload only: progress,
+// money, options. Safe when storage is blocked (sandboxed iframes):
+// every call is guarded and falls back to memory.
+import { CONFIG } from './config.js';
 
-export function defaultSave() {
-  return { v: 1, mission: 0, completed: [], money: 0, options: { muted: false, radio: 0 } };
+const SCHEMA = 1;
+
+function blank() {
+  return {
+    version: SCHEMA,
+    missionsDone: 0,       // highest mission completed (0..7)
+    money: CONFIG.money.start,
+    carColor: 0xc23a2e,
+    volume: CONFIG.audio.master,
+    muted: false,
+    radioStation: 0,
+    endings: [],           // endings seen: 'leak' | 'blackmail' | 'burn'
+    freeRoam: false,
+  };
 }
 
-export function loadSave() {
+export function createSave() {
+  let memory = blank();
+  let available = true;
   try {
-    const raw = window.localStorage.getItem(SAVE_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (!data || data.v !== 1 || !Number.isInteger(data.mission)) return null;
-    const save = defaultSave();
-    save.mission = Math.max(0, Math.min(7, data.mission));
-    save.completed = Array.isArray(data.completed) ? data.completed.filter((x) => Number.isInteger(x)) : [];
-    save.money = Number.isFinite(data.money) ? Math.max(0, Math.floor(data.money)) : 0;
-    if (data.options) {
-      save.options.muted = data.options.muted === true;
-      save.options.radio = data.options.radio === 1 ? 1 : 0;
+    const probe = '__glassline_probe__';
+    localStorage.setItem(probe, '1');
+    localStorage.removeItem(probe);
+  } catch {
+    available = false;
+  }
+
+  function read() {
+    if (!available) return { ...memory };
+    try {
+      const raw = localStorage.getItem(CONFIG.saveKey);
+      if (!raw) return blank();
+      const data = JSON.parse(raw);
+      if (!data || data.version !== SCHEMA) return blank();
+      return { ...blank(), ...data };
+    } catch {
+      return blank();
     }
-    return save;
-  } catch {
-    return null;
   }
-}
 
-export function writeSave(save) {
-  try {
-    window.localStorage.setItem(SAVE_KEY, JSON.stringify(save));
-  } catch {
-    // Storage can be off (private windows): progress then lasts this visit only.
+  function write(data) {
+    memory = { ...blank(), ...data, version: SCHEMA };
+    if (!available) return false;
+    try {
+      localStorage.setItem(CONFIG.saveKey, JSON.stringify(memory));
+      return true;
+    } catch {
+      return false;
+    }
   }
-}
 
-export function clearSave() {
-  try {
-    window.localStorage.removeItem(SAVE_KEY);
-  } catch {
-    // Ignore.
+  function clear() {
+    memory = blank();
+    if (!available) return;
+    try { localStorage.removeItem(CONFIG.saveKey); } catch { /* ignore */ }
   }
+
+  return {
+    load: read,
+    save: write,
+    clear,
+    blank,
+    get available() { return available; },
+  };
 }

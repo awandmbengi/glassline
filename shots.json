@@ -1,1 +1,1 @@
-[{"name":"1-overpass.jpg","query":"?shot=overpass&seed=1"},{"name":"2-intersection.jpg","query":"?shot=intersection&seed=1"},{"name":"3-drainage.jpg","query":"?shot=drainage&seed=1"},{"name":"4-dam.jpg","query":"?shot=dam&seed=1"}]
+[{"name":"1-overpass.jpg","query":"?shot=1"},{"name":"2-intersection.jpg","query":"?shot=2"},{"name":"3-channel.jpg","query":"?shot=3"},{"name":"4-dam.jpg","query":"?shot=4"}]

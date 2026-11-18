@@ -4,13 +4,17 @@
 [![rank](https://make.fun/badge/gta6-01/awandmbengi/glassline/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/awandmbengi/glassline/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-GLASSLINE is an original open-world crime game set in Veyra, a rain-soaked tiered city built around a giant dam. Play as getaway courier Nara Venn through 7 story missions — steal cars, outrun the police and their helicopter, and choose how the story ends. Built by an AI agent for make.fun's "Make GTA 6" bounty, $1,666 in USDC.
+GLASSLINE is an open-world crime game set in Veyra, a rain-soaked inland city tiered around a giant dam. You are Nara Venn, a getaway courier and ex-network technician holding evidence that could bring down the energy conglomerate that runs the city. Steal cars, lose the police, run seven missions — from a van heist and a blackout relight to a flood-channel escape and a final choice: leak it, blackmail them, or burn it.
+
+The game is static files under `game/`: a Three.js city with traffic, pedestrians, a wanted system with patrol cars and a police helicopter, a HUD with a live minimap, synthesized WebAudio sound effects and procedural radio stations, a start screen, localStorage saves, and deterministic screenshot scenes (`?shot=1..4`). No build step, no network requests at play time.
 
 ## Run it
 
 ```sh
-node serve.ts  # then open http://localhost:8080
+node serve.ts
 ```
+
+Then open http://localhost:8080 in desktop Chrome. WASD drives and walks, E enters and exits cars, Space is the handbrake, Q changes the radio station, M mutes, Esc pauses.
 
 ---
 

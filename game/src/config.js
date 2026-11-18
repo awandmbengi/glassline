@@ -1,171 +1,120 @@
-// GLASSLINE — tuning, city layout, districts, factions and the 7 story missions.
-// Veyra is an inland tiered city around a giant dam: heavy rain, steel-blue + amber.
-// Nara Venn is a getaway courier and ex-network technician: a skilled driver, not a
-// fighter — every mission below is driving or stealth, never guard-filled combat.
-export const STEP = 1 / 60;
-export const SAVE_KEY = 'glassline-save-v1';
+// GLASSLINE — shared constants for the city of Veyra.
+// Everything tunable lives here so the other modules stay small.
+export const CONFIG = {
+  version: '3.0.0',
+  saveKey: 'glassline-save-v1',
+  title: 'GLASSLINE',
+  city: 'Veyra',
+  hero: 'Nara Venn',
 
-export const CITY = {
-  bound: 180,
-  roads: [-150, -90, -30, 30, 90, 150],
-  roadHalf: 6,
-  // Kestrel Heights overpass: deck along z = 0, |x| < 120 at y = 8, ramps to |x| = 150.
-  overpass: { halfWidth: 7, deck: 8, deckEnd: 120, rampEnd: 150 },
-  // Sluice flood channel: sunken roadway, floor y = -2, x in [-150, -90], z in [108, 132].
-  channel: { x0: -150, x1: -90, z0: 108, z1: 132, floor: -2, ramp: 10 },
-  // The dam wall at the north edge; the reservoir is the water beyond it.
-  damZ: -195,
+  // World layout (units are metres, Y is up).
+  world: {
+    size: 1200,          // playable square, centred on 0,0
+    half: 600,
+    roadGap: 120,        // distance between parallel roads
+    roadWidth: 14,
+    block: 96,           // building block size
+    sidewalk: 4,
+    damX: 520,           // dam wall runs along x = +520
+    reservoirX0: 520,    // water east of the dam
+    canalY: -420,        // flood channels in the south
+    overpassY: 18,       // elevated ring road height
+  },
+
+  // Look: steel blue + amber, heavy rain, dusk.
+  palette: {
+    sky: 0x16222e,
+    fog: 0x1a2836,
+    ground: 0x232a30,
+    road: 0x1b2024,
+    roadLine: 0xd8a13c,
+    building: 0x2c3844,
+    buildingTop: 0x3a4a58,
+    windowLit: 0xffb347,
+    windowDark: 0x1c2836,
+    dam: 0x4a5258,
+    water: 0x16324a,
+    canal: 0x1d2f3a,
+    amber: 0xffb347,
+    police: 0x2a6fd8,
+    policeLight: 0xff2a2a,
+    heli: 0x8a94a0,
+  },
+
+  rain: { count: 2600, speed: 90, area: 700, splash: false },
+  lightning: { minGap: 9, maxGap: 26, flashMs: 140 },
+
+  player: {
+    walkSpeed: 6,
+    runSpeed: 11,
+    carAccel: 26,
+    carBrake: 42,
+    carReverse: 14,
+    carMaxSpeed: 46,
+    carTurn: 1.9,
+    carGrip: 3.2,
+    health: 100,
+    enterRadius: 5,
+  },
+
+  traffic: { count: 14, speed: 9, minGap: 18 },
+  pedestrians: { count: 22, speed: 1.6 },
+
+  wanted: {
+    max: 5,
+    decaySeconds: 22,     // one star fades after this long unseen
+    stealCar: 1,
+    hitPed: 1,
+    hitCar: 1,
+    seenSteal: 1,
+    policePerStar: 1,     // patrol cars per wanted star
+    heliAt: 3,            // helicopter from wanted 3
+    bustRadius: 4.5,      // police must be this close to bust
+    bustSeconds: 2.5,     // ...for this long while the player is slow
+    bustSlowSpeed: 3,
+  },
+
+  money: { start: 120, missionReward: [400, 550, 700, 650, 800, 900, 0] },
+
+  audio: { master: 0.5, engineBase: 55, sirenOn: true },
+
+  radio: {
+    stations: [
+      { name: 'GLASS FM', bpm: 112, root: 55, mood: 'drive' },
+      { name: 'DAM STATIC', bpm: 84, root: 49, mood: 'dark' },
+      { name: 'RESERVOIR NIGHTS', bpm: 96, root: 65.41, mood: 'chill' },
+    ],
+  },
+
+  missions: [
+    { id: 1, name: 'Van Job', reward: 400 },
+    { id: 2, name: 'Relight', reward: 550 },
+    { id: 3, name: 'Escort', reward: 700 },
+    { id: 4, name: 'Patrol Car', reward: 650 },
+    { id: 5, name: 'Skyline Footage', reward: 800 },
+    { id: 6, name: 'Flood Run', reward: 900 },
+    { id: 7, name: 'The Choice', reward: 0 },
+  ],
+
+  // Deterministic screenshot scenes (?shot=1..4).
+  shots: [
+    { id: 1, name: 'overpass', label: 'Pelarian di Jalan Layang' },
+    { id: 2, name: 'intersection', label: 'Persimpangan Terkunci' },
+    { id: 3, name: 'drainage', label: 'Keluar dari Mobil, Masuk ke Saluran' },
+    { id: 4, name: 'dam', label: 'Misi di Bawah Bendungan' },
+  ],
 };
 
-export const DISTRICTS = [
-  { name: 'Glassworks', x0: -60, x1: 60, z0: -150, z1: -30, style: 'tower' },
-  { name: 'Reservoir Row', x0: -150, x1: -30, z0: -150, z1: -30, style: 'stilt' },
-  { name: 'Kestrel Heights', x0: -150, x1: 150, z0: -15, z1: 15, style: 'overpass' },
-  { name: 'Sluice District', x0: -150, x1: -30, z0: 30, z1: 150, style: 'warehouse' },
-  { name: 'Foundry Yard', x0: 30, x1: 150, z0: 30, z1: 150, style: 'industrial' },
-];
-
-export function districtAt(x, z) {
-  for (const d of DISTRICTS) {
-    if (x >= d.x0 && x <= d.x1 && z >= d.z0 && z <= d.z1) return d.name;
-  }
-  return 'Veyra';
+// Small helpers shared by modules that do not want a dependency.
+export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+export function lerp(a, b, t) { return a + (b - a) * t; }
+export function dist2(ax, az, bx, bz) {
+  const dx = ax - bx, dz = az - bz;
+  return dx * dx + dz * dz;
 }
-
-// The people and powers of Veyra. All invented for this game.
-export const FACTIONS = {
-  combine: 'Aurek Combine',
-  combineBoss: 'Director Ilya Sark',
-  syndicate: 'The Undertow',
-  syndicateBoss: 'Vess "Tide" Marrow',
-  contact: 'Doss Kade',
-  witness: 'Mara Quill',
-};
-
-export const RADIO = [
-  { name: '98.6 Static Bloom', bpm: 112, root: 55, scale: [0, 3, 5, 7, 10] },
-  { name: 'KVRN 104.1 Rain Line', bpm: 84, root: 49, scale: [0, 2, 3, 7, 8] },
-];
-
-// Mission steps: goto (reach a marker), steal (enter a marked vehicle), interact
-// (hold E at a marker), pickup (a passenger walks to your stopped car), escape
-// (reach a marker while wanted), timed (reach a marker before the clock), choice
-// (drive to one of three markers; the one you reach decides the ending).
-export const MISSIONS = [
-  {
-    id: 'first-drop',
-    name: '1 · First Drop',
-    briefing: 'Doss needs a relay device on the Glassworks comms tower. The Aurek service van parked by Reservoir Row has one in the back. Take it — quietly.',
-    reward: 400,
-    steps: [
-      { kind: 'steal', text: 'Steal the Aurek service van', vehicle: 'van' },
-      { kind: 'goto', text: 'Deliver the device to the comms tower', place: 'commsTower' },
-    ],
-  },
-  {
-    id: 'lights-on',
-    name: '2 · Lights Out, Lights On',
-    briefing: 'Sark cut power to the whole Sluice District to flush you out. The Foundry Yard substation can relight it — if you can reach the panel on foot.',
-    reward: 500,
-    steps: [
-      { kind: 'goto', text: 'Reach the Foundry Yard substation', place: 'powerDepot' },
-      { kind: 'interact', text: 'Hold E — relight the Sluice District', place: 'powerDepot', hold: 2 },
-      { kind: 'escape', text: 'Get clear — reach the Sluice marker', place: 'sluiceMarker', wanted: 1 },
-    ],
-  },
-  {
-    id: 'the-witness',
-    name: '3 · The Witness',
-    briefing: 'Mara Quill saw what Sark did to the grid. She is waiting on Reservoir Row. Drive her across the Kestrel overpass to the Glassworks safehouse — the roadblocks will not make it easy.',
-    reward: 700,
-    steps: [
-      { kind: 'pickup', text: 'Pick up Mara Quill on Reservoir Row', place: 'maraPickup' },
-      { kind: 'goto', text: 'Cross the overpass to the safehouse', place: 'safehouse', passenger: true },
-    ],
-  },
-  {
-    id: 'borrowed-authority',
-    name: '4 · Borrowed Authority',
-    briefing: 'A patrol car sits running at the Glassworks checkpoint — its driver went for coffee. In a patrol car, nobody looks twice. Take it through the traffic-control gate.',
-    reward: 600,
-    steps: [
-      { kind: 'steal', text: 'Steal the patrol car at the checkpoint', vehicle: 'patrol' },
-      { kind: 'goto', text: 'Drive through the traffic-control gate', place: 'trafficGate', disguised: true },
-    ],
-  },
-  {
-    id: 'dead-air',
-    name: '5 · Dead Air',
-    briefing: 'The footage that buries Sark is on a relay drive at the Glassworks rooftop access. Grab it on foot — and be ready: the moment you touch it, a police helicopter is coming.',
-    reward: 800,
-    steps: [
-      { kind: 'goto', text: 'Reach the rooftop access in Glassworks', place: 'rooftop' },
-      { kind: 'interact', text: 'Hold E — pull the footage drive', place: 'rooftop', hold: 2, wanted: 3 },
-      { kind: 'escape', text: 'Lose the helicopter — get 150 m clear', place: 'anywhere', wanted: 3 },
-    ],
-  },
-  {
-    id: 'flood-channel',
-    name: '6 · The Flood Channel',
-    briefing: 'The Undertow opened the sluice gates early. The only way out of the Sluice District is the flood channel itself — drive it end to end before the water takes the road.',
-    reward: 900,
-    steps: [
-      { kind: 'goto', text: 'Enter the flood channel', place: 'channelEntry' },
-      { kind: 'timed', text: 'Reach the tunnel exit before the water rises', place: 'channelExit', seconds: 90 },
-    ],
-  },
-  {
-    id: 'the-choice',
-    name: '7 · The Choice',
-    briefing: 'You hold the evidence now. The press will run it. The Undertow will pay for it. The dam will hide it. One drive, one ending — choose where the truth goes.',
-    reward: 1500,
-    steps: [
-      {
-        kind: 'choice',
-        text: 'Choose: press HQ (Glassworks), the Undertow den (Sluice), or the dam gate',
-        places: ['pressHQ', 'undertowDen', 'damGate'],
-        endings: [
-          'THE LEAK — the footage runs on every screen in Veyra. Sark is finished by morning. Nara keeps driving.',
-          'THE SALE — the Undertow pays in full and the evidence vanishes. Nara is rich, and the city stays thirsty.',
-          'THE BURN — the drive goes into the reservoir at the dam gate. No one wins. No one loses. Nara keeps driving.',
-        ],
-      },
-    ],
-  },
-];
-
-// Named places on the map (x, z). Every mission marker points at one of these.
-export const PLACES = {
-  vanSpawn: { x: -90, z: -150, label: 'Aurek service van' },
-  commsTower: { x: 30, z: -150, label: 'Comms tower' },
-  powerDepot: { x: 120, z: 120, label: 'Foundry substation' },
-  sluiceMarker: { x: -90, z: 90, label: 'Sluice marker' },
-  maraPickup: { x: -150, z: -60, label: 'Mara Quill' },
-  safehouse: { x: -60, z: -90, label: 'Safehouse' },
-  patrolSpawn: { x: 60, z: -30, label: 'Patrol car' },
-  trafficGate: { x: 30, z: -30, label: 'Traffic-control gate' },
-  rooftop: { x: 0, z: -90, label: 'Rooftop access' },
-  channelEntry: { x: -150, z: 120, label: 'Flood channel entry' },
-  channelExit: { x: -90, z: 120, label: 'Tunnel exit' },
-  pressHQ: { x: 90, z: -60, label: 'Veyra Herald press HQ' },
-  undertowDen: { x: -120, z: 60, label: 'Undertow den' },
-  damGate: { x: -60, z: -180, label: 'Dam service gate' },
-  start: { x: -30, z: 150, label: 'Start' },
-};
-
-export const TUNING = {
-  walkSpeed: 9,
-  carAccel: 26,
-  carBrake: 40,
-  carReverse: 12,
-  carMaxSpeed: 42,
-  carTurn: 1.9,
-  carGrip: 3.2,
-  wantedDecaySeconds: 15,
-  bustSeconds: 3,
-  heliAtWanted: 3,
-  maxPoliceCars: 4,
-  trafficCars: 14,
-  pedestrians: 22,
-  moneyStart: 0,
-};
+export function angleLerp(a, b, t) {
+  let d = (b - a) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return a + d * t;
+}
