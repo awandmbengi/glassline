@@ -5,7 +5,7 @@
 // time, so the screenshot scenes are repeatable.
 import * as THREE from 'three';
 import { CITY, PLACES } from './config.js';
-import { groundHeight } from './city.js';
+import { channelDepth, groundHeight, inChannel, onOverpass } from './city.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
@@ -79,8 +79,8 @@ function windowTexture(style, seed) {
   return canvasTexture(128, (g, s) => {
     g.fillStyle = style === 'tower' ? '#2b3648' : style === 'stilt' ? '#4a3a28' : '#33302a';
     g.fillRect(0, 0, s, s);
-    const cols = style === 'tower' ? 8 : 5;
-    const rows = style === 'tower' ? 16 : 4;
+    const cols = style === 'tower' ? 12 : 6;
+    const rows = style === 'tower' ? 24 : 5;
     for (let c = 0; c < cols; c += 1) {
       for (let r = 0; r < rows; r += 1) {
         const lit = rnd() < 0.55;
@@ -168,18 +168,31 @@ export function createRenderer(canvas, world) {
   scene.background = new THREE.Color(0x0b1220);
   scene.fog = new THREE.FogExp2(0x0b1220, 0.0038);
 
-  const hemi = new THREE.HemisphereLight(0x8fb0d8, 0x1a2029, 0.9);
+  const hemi = new THREE.HemisphereLight(0x8fb0d8, 0x1a2029, 1.25);
   scene.add(hemi);
-  const moon = new THREE.DirectionalLight(0xaac4e8, 1.1);
+  const moon = new THREE.DirectionalLight(0xaac4e8, 1.2);
   moon.position.set(-60, 120, -40);
   scene.add(moon);
-  const amber = new THREE.DirectionalLight(0xffb84d, 0.25);
+  const amber = new THREE.DirectionalLight(0xffb84d, 0.4);
   amber.position.set(80, 40, 80);
   scene.add(amber);
 
-  // Ground with the painted road grid.
+  // Ground with the painted road grid. The plane is displaced down where the
+  // flood channel runs, so the sunken road is a real depression (cars, the
+  // player and the water sit in it, not under a flat plane).
+  const groundGeo = new THREE.PlaneGeometry(360, 360, 120, 120);
+  {
+    const pos = groundGeo.attributes.position;
+    for (let i = 0; i < pos.count; i += 1) {
+      // After rotateX(-PI/2) local +y maps to world -z, local +z to world +y.
+      const x = pos.getX(i);
+      const z = -pos.getY(i);
+      pos.setZ(i, channelDepth(x, z));
+    }
+    groundGeo.computeVertexNormals();
+  }
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(360, 360),
+    groundGeo,
     new THREE.MeshLambertMaterial({ map: groundTexture() }),
   );
   ground.rotation.x = -Math.PI / 2;
@@ -190,10 +203,10 @@ export function createRenderer(canvas, world) {
   const texStilt = windowTexture('stilt', 23);
   const texWare = windowTexture('warehouse', 37);
   const buildingMats = {
-    tower: new THREE.MeshLambertMaterial({ map: texTower, emissive: 0xffffff, emissiveMap: texTower, emissiveIntensity: 0.55 }),
-    stilt: new THREE.MeshLambertMaterial({ map: texStilt, emissive: 0xffffff, emissiveMap: texStilt, emissiveIntensity: 0.45 }),
-    warehouse: new THREE.MeshLambertMaterial({ map: texWare, emissive: 0xffffff, emissiveMap: texWare, emissiveIntensity: 0.35 }),
-    industrial: new THREE.MeshLambertMaterial({ map: texWare, emissive: 0xffffff, emissiveMap: texWare, emissiveIntensity: 0.35 }),
+    tower: new THREE.MeshLambertMaterial({ map: texTower, emissive: 0xffffff, emissiveMap: texTower, emissiveIntensity: 0.4 }),
+    stilt: new THREE.MeshLambertMaterial({ map: texStilt, emissive: 0xffffff, emissiveMap: texStilt, emissiveIntensity: 0.35 }),
+    warehouse: new THREE.MeshLambertMaterial({ map: texWare, emissive: 0xffffff, emissiveMap: texWare, emissiveIntensity: 0.3 }),
+    industrial: new THREE.MeshLambertMaterial({ map: texWare, emissive: 0xffffff, emissiveMap: texWare, emissiveIntensity: 0.3 }),
   };
   const boxGeo = new THREE.BoxGeometry(1, 1, 1);
   for (const b of world.buildings) {
@@ -216,17 +229,44 @@ export function createRenderer(canvas, world) {
   mastTip.position.set(PLACES.commsTower.x, 71, PLACES.commsTower.z);
   scene.add(mastTip);
 
-  // The dam: a huge concrete wall across the north edge, with spillway stripes.
+  // The dam: a huge concrete wall across the north edge, with spillway stripes
+  // and its name on the south face, so it reads as a landmark, not a dark slab.
   const dam = new THREE.Mesh(
     new THREE.BoxGeometry(380, 42, 16),
-    new THREE.MeshLambertMaterial({ color: 0x3a4552 }),
+    new THREE.MeshLambertMaterial({ color: 0x4a5866 }),
   );
   dam.position.set(0, 21, CITY.damZ);
   scene.add(dam);
+  // The dam face is 380x42 (about 9:1), so its sign uses a wide canvas or the
+  // letters squash. The sign sits west of centre, in view from the dam gate.
+  const damCanvas = document.createElement('canvas');
+  damCanvas.width = 2048;
+  damCanvas.height = 256;
+  {
+    const g = damCanvas.getContext('2d');
+    g.fillStyle = '#4a5866';
+    g.fillRect(0, 0, 2048, 256);
+    g.fillStyle = '#3a4552';
+    for (let x = 0; x < 2048; x += 172) g.fillRect(x, 0, 68, 256);
+    g.fillStyle = '#ffb84d';
+    g.font = 'bold 110px system-ui, sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('VEYRA DAM', 700, 108);
+    g.fillStyle = '#9fb8d8';
+    g.font = 'bold 34px system-ui, sans-serif';
+    g.fillText('AUREK COMBINE · EST. 1987', 700, 190);
+  }
+  const damTex = new THREE.CanvasTexture(damCanvas);
+  damTex.colorSpace = THREE.SRGBColorSpace;
+  damTex.anisotropy = 4;
+  const damFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(380, 42),
+    new THREE.MeshLambertMaterial({ map: damTex }),
+  );
+  damFace.position.set(0, 21, CITY.damZ + 8.2);
+  scene.add(damFace);
   for (let x = -150; x <= 150; x += 30) {
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(8, 30, 0.5), new THREE.MeshLambertMaterial({ color: 0x2a333f }));
-    stripe.position.set(x, 15, CITY.damZ + 8.2);
-    scene.add(stripe);
     const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.6, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffb84d }));
     lamp.position.set(x, 43, CITY.damZ + 8);
     scene.add(lamp);
@@ -246,6 +286,25 @@ export function createRenderer(canvas, world) {
   const deck = new THREE.Mesh(new THREE.BoxGeometry(240, 0.8, op.halfWidth * 2), deckMat);
   deck.position.set(0, op.deck - 0.4, 0);
   scene.add(deck);
+  // Deck surface with lane markings, so the overpass reads as a road, not a slab.
+  const deckTex = canvasTexture(512, (g, s) => {
+    g.fillStyle = '#1d232e';
+    g.fillRect(0, 0, s, s);
+    g.fillStyle = '#c8a24a';
+    for (let x = 0; x < s; x += 32) g.fillRect(x, s / 2 - 1, 18, 2);
+    g.fillStyle = '#8b93a3';
+    g.fillRect(0, 3, s, 2);
+    g.fillRect(0, s - 5, s, 2);
+  });
+  deckTex.wrapS = THREE.RepeatWrapping;
+  deckTex.repeat.x = 6;
+  const deckTop = new THREE.Mesh(
+    new THREE.PlaneGeometry(240, op.halfWidth * 2),
+    new THREE.MeshLambertMaterial({ map: deckTex }),
+  );
+  deckTop.rotation.x = -Math.PI / 2;
+  deckTop.position.set(0, op.deck + 0.02, 0);
+  scene.add(deckTop);
   const barrierMat = new THREE.MeshLambertMaterial({ color: 0x39424f });
   for (const sz of [-1, 1]) {
     const barrier = new THREE.Mesh(new THREE.BoxGeometry(240, 1.1, 0.4), barrierMat);
@@ -279,13 +338,25 @@ export function createRenderer(canvas, world) {
   water.rotation.x = -Math.PI / 2;
   water.position.set((ch.x0 + ch.x1) / 2, -2.8, (ch.z0 + ch.z1) / 2);
   scene.add(water);
+  // Amber strip lights along the channel walls, so the sunken road is readable.
+  const stripMat = new THREE.MeshBasicMaterial({ color: 0xffb84d });
+  for (let x = ch.x0 + 4; x <= ch.x1 - 4; x += 15) {
+    for (const sz of [ch.z0 + 0.6, ch.z1 - 0.6]) {
+      const strip = new THREE.Mesh(new THREE.BoxGeometry(3, 0.3, 0.3), stripMat);
+      strip.position.set(x, -0.4, sz);
+      scene.add(strip);
+    }
+  }
 
   // Street lamps: instanced poles + emissive heads along the roads.
   const lampPositions = [];
   for (const r of CITY.roads) {
     for (let v = -150; v <= 150; v += 30) {
-      lampPositions.push([r + 8, v]);
-      lampPositions.push([v, r + 8]);
+      for (const [x, z] of [[r + 8, v], [v, r + 8]]) {
+        // No lamps on the overpass deck or inside the flood channel.
+        if (onOverpass(x, z) || inChannel(x, z)) continue;
+        lampPositions.push([x, z]);
+      }
     }
   }
   const poleGeo = new THREE.CylinderGeometry(0.12, 0.16, 6, 6);
@@ -308,7 +379,7 @@ export function createRenderer(canvas, world) {
   const rainGeo = new THREE.BufferGeometry();
   const rainPos = new Float32Array(RAIN_COUNT * 3);
   rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
-  const rain = new THREE.Points(rainGeo, new THREE.PointsMaterial({ color: 0x9fb8d8, size: 0.35, transparent: true, opacity: 0.55 }));
+  const rain = new THREE.Points(rainGeo, new THREE.PointsMaterial({ color: 0x9fb8d8, size: 0.22, transparent: true, opacity: 0.45 }));
   rain.frustumCulled = false;
   scene.add(rain);
   const rainSeed = [];
@@ -321,13 +392,13 @@ export function createRenderer(canvas, world) {
   for (let i = 0; i < 3; i += 1) {
     const group = new THREE.Group();
     const pillar = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.6, 1.6, 60, 10, 1, true),
-      new THREE.MeshBasicMaterial({ color: 0xffb84d, transparent: true, opacity: 0.28, side: THREE.DoubleSide, depthWrite: false }),
+      new THREE.CylinderGeometry(1.0, 1.0, 40, 10, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0xffb84d, transparent: true, opacity: 0.15, side: THREE.DoubleSide, depthWrite: false }),
     );
-    pillar.position.y = 30;
+    pillar.position.y = 20;
     group.add(pillar);
-    const diamond = new THREE.Mesh(new THREE.OctahedronGeometry(1.4), new THREE.MeshBasicMaterial({ color: 0xffb84d }));
-    diamond.position.y = 8;
+    const diamond = new THREE.Mesh(new THREE.OctahedronGeometry(0.9), new THREE.MeshBasicMaterial({ color: 0xffb84d }));
+    diamond.position.y = 6;
     diamond.name = 'diamond';
     group.add(diamond);
     group.visible = false;
@@ -335,17 +406,25 @@ export function createRenderer(canvas, world) {
     beacons.push(group);
   }
 
-  // Helicopter: body, tail, spinning rotor, spotlight.
+  // Helicopter: light body with a white stripe so it reads against the night
+  // sky, a spinning rotor, a blinking red beacon, and a spotlight.
   const heli = new THREE.Group();
-  const heliBody = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.6, 5), new THREE.MeshLambertMaterial({ color: 0x1c2f4a }));
+  const heliBody = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.6, 5), new THREE.MeshLambertMaterial({ color: 0x4a6a8a }));
   heli.add(heliBody);
-  const heliTail = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 4), new THREE.MeshLambertMaterial({ color: 0x1c2f4a }));
+  const heliStripe = new THREE.Mesh(new THREE.BoxGeometry(3.3, 0.4, 5.1), new THREE.MeshBasicMaterial({ color: 0xe8ecf2 }));
+  heliStripe.position.y = 0.2;
+  heli.add(heliStripe);
+  const heliTail = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 4), new THREE.MeshLambertMaterial({ color: 0x4a6a8a }));
   heliTail.position.set(0, 0.3, -4);
   heli.add(heliTail);
-  const rotor = new THREE.Mesh(new THREE.BoxGeometry(11, 0.12, 0.7), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+  const rotor = new THREE.Mesh(new THREE.BoxGeometry(11, 0.12, 0.7), new THREE.MeshLambertMaterial({ color: 0x9aa4b0 }));
   rotor.position.y = 1.1;
   rotor.name = 'rotor';
   heli.add(rotor);
+  const heliBeacon = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 6), new THREE.MeshBasicMaterial({ color: 0xff3020 }));
+  heliBeacon.position.set(0, 1.05, 0);
+  heliBeacon.name = 'beacon';
+  heli.add(heliBeacon);
   const spot = new THREE.SpotLight(0xfff2c0, 0, 120, 0.35, 0.5, 1.2);
   heli.add(spot);
   const spotTarget = new THREE.Object3D();
@@ -355,7 +434,7 @@ export function createRenderer(canvas, world) {
   scene.add(heli);
 
   // The player (Nara, amber jacket), Mara (teal coat), and the pedestrians.
-  const playerMesh = makePersonMesh(0xd88a1e);
+  const playerMesh = makePersonMesh(0xf0a030);
   scene.add(playerMesh);
   const maraMesh = makePersonMesh(0x2e8a7a);
   scene.add(maraMesh);
@@ -482,6 +561,8 @@ export function createRenderer(canvas, world) {
       heli.rotation.y = h.heading;
       const rotorMesh = heli.getObjectByName('rotor');
       if (rotorMesh) rotorMesh.rotation.y += 0.9;
+      const beaconMesh = heli.getObjectByName('beacon');
+      if (beaconMesh) beaconMesh.visible = Math.floor(t * 2) % 2 === 0;
       spot.intensity = 900;
       spotTarget.position.set(p.x, p.y, p.z);
     } else {
@@ -495,7 +576,7 @@ export function createRenderer(canvas, world) {
         group.position.set(markers[i].x, groundHeight(markers[i].x, markers[i].z), markers[i].z);
         const diamond = group.getObjectByName('diamond');
         if (diamond) {
-          diamond.position.y = 8 + Math.sin(t * 2 + i) * 0.8;
+          diamond.position.y = 6 + Math.sin(t * 2 + i) * 0.8;
           diamond.rotation.y += 0.03;
         }
       } else {

@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>GLASSLINE — A Veyra Story</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1220; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #eef1f5; }
@@ -15,6 +16,8 @@
   #hud-topleft { position: absolute; top: 12px; left: 12px; max-width: 420px; }
   #wanted { font-size: 22px; letter-spacing: 3px; color: #ffb84d; }
   #wanted.hot { color: #ff4530; }
+  #wanted.disguised { opacity: 0.45; }
+  #disguise-badge { font-size: 12px; letter-spacing: 2px; color: #7dd8a0; border: 1px solid #7dd8a0; border-radius: 4px; padding: 2px 6px; margin-left: 8px; vertical-align: middle; }
   #money { font-size: 20px; font-weight: 700; color: #9fd8a0; margin-top: 2px; }
   #mission-name { font-weight: 700; color: #ffb84d; margin-top: 6px; }
   #objective { color: #dfe6ef; margin-top: 2px; }
@@ -56,7 +59,7 @@
 
 <div id="hud" class="hidden">
   <div id="hud-topleft" class="panel">
-    <div id="wanted">☆☆☆☆☆</div>
+    <div id="wanted">☆☆☆☆☆</div><span id="disguise-badge" class="hidden">DISGUISED</span>
     <div id="money">$0</div>
     <div id="mission-name"></div>
     <div id="objective"></div>

@@ -28,6 +28,8 @@ const status = document.getElementById('status');
 let save = loadSave();
 const world = createWorld(createRandom(seed), save);
 const renderer = createRenderer(canvas, world.state);
+// Debug handle for headless play-tests (this repo's own test script).
+window.__glassline = { world, get state() { return world.state; } };
 const audio = createAudio();
 const input = createInput(canvas);
 
@@ -45,7 +47,7 @@ function announce(message) {
 function persist() {
   const data = {
     v: 1,
-    mission: Math.min(world.runner.index, 7),
+    mission: Math.min(world.runner.runner.index, 7),
     completed: [...world.state.completed],
     money: world.state.money,
     options: { muted, radio: radioStation },
@@ -82,7 +84,7 @@ const hud = createHud({
     announce('Playing.');
   },
   onRestartMission() {
-    const index = world.runner.index;
+    const index = world.runner.runner.index;
     world.state.player.x = -30;
     world.state.player.z = 150;
     world.state.player.y = 0;
@@ -133,7 +135,7 @@ function handleEvent(ev) {
     case 'mission-complete': {
       audio.success();
       persist();
-      const last = world.runner.index >= 7;
+      const last = world.runner.runner.index >= 7;
       if (world.state.ending) {
         setScreen('ending');
         hud.showEnding(world.state.ending);
@@ -192,6 +194,7 @@ function drainEvents() {
 }
 
 function runShot(name) {
+  hud.hideAllScreens();
   stageShot(name, world, renderer);
   world.state.radioName = audio.stationName();
   hud.update(world.state, SCREEN_PLAY);
@@ -223,6 +226,9 @@ function runGame() {
     if (actions & ACTION_PAUSE) {
       if (screen === SCREEN_PLAY) {
         setScreen(SCREEN_PAUSED);
+        // No mission to restart once the story is finished — hide the button
+        // instead of letting it call startMission(7).
+        document.getElementById('pause-restart').classList.toggle('hidden', !world.runner.current());
         hud.show('pause-screen');
         announce('Paused.');
       } else if (screen === SCREEN_PAUSED) {
@@ -299,6 +305,7 @@ function runGame() {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && screen === SCREEN_PLAY) {
       setScreen(SCREEN_PAUSED);
+      document.getElementById('pause-restart').classList.toggle('hidden', !world.runner.current());
       hud.show('pause-screen');
       announce('Paused.');
     }

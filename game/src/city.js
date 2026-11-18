@@ -8,8 +8,8 @@ function clamp(v, a, b) {
   return Math.max(a, Math.min(b, v));
 }
 
-/** Ground height under a point: 0, the overpass deck/ramps, or the channel floor/ramps. */
-export function groundHeight(x, z) {
+/** The channel's depth under a point: 0 outside it, -2 on its floor, ramps at the ends. */
+export function channelDepth(x, z) {
   const ch = CITY.channel;
   if (x >= ch.x0 - ch.ramp && x <= ch.x1 + ch.ramp && z >= ch.z0 && z <= ch.z1) {
     // Sunken channel: floor in the middle, ramps at both ends.
@@ -17,6 +17,13 @@ export function groundHeight(x, z) {
     if (x > ch.x1) return ch.floor * (((ch.x1 + ch.ramp) - x) / ch.ramp);
     return ch.floor;
   }
+  return 0;
+}
+
+/** Ground height under a point: 0, the overpass deck/ramps, or the channel floor/ramps. */
+export function groundHeight(x, z) {
+  const cd = channelDepth(x, z);
+  if (cd !== 0) return cd;
   const op = CITY.overpass;
   if (Math.abs(z) < op.halfWidth && Math.abs(x) < op.rampEnd) {
     const ax = Math.abs(x);

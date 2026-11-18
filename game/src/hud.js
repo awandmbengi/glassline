@@ -128,6 +128,11 @@ export function createHud(callbacks) {
     const stars = el('wanted');
     stars.textContent = '★'.repeat(wanted) + '☆'.repeat(5 - wanted);
     stars.classList.toggle('hot', wanted >= 3);
+    // The disguise is a real state the player can see: the stars dim and the
+    // badge says the police are not on them.
+    const badge = el('disguise-badge');
+    if (badge) badge.classList.toggle('hidden', !world.disguised);
+    stars.classList.toggle('disguised', Boolean(world.disguised));
     el('money').textContent = `$${world.money}`;
     el('district').textContent = districtAt(p.x, p.z);
     el('speed').textContent = p.car ? `${Math.round(Math.abs(p.car.speed) * 3.6)} km/h` : 'on foot';

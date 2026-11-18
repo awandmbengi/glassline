@@ -4,7 +4,7 @@
 // mission pays out, saves, and unlocks the next. Being busted or running out the
 // clock restarts the mission from its first step.
 import { MISSIONS, PLACES } from './config.js';
-import { addWanted } from './police.js';
+import { addWanted, setWanted } from './police.js';
 
 function dist2D(ax, az, bx, bz) {
   return Math.hypot(ax - bx, az - bz);
@@ -72,7 +72,8 @@ export function createMissionRunner(world) {
     world.events.push({ type: 'mission-complete', name: mission.name, reward: mission.reward });
     if (runner.index === MISSIONS.length - 1) {
       runner.done = true;
-      world.ending = null; // set by the choice step itself
+      // world.ending stays as the choice step set it — the mission-complete
+      // handler shows the ending screen from it.
     }
     runner.index += 1;
     runner.stepIndex = 0;
@@ -90,7 +91,21 @@ export function createMissionRunner(world) {
     runner.stepIndex = 0;
     runner.holdTimer = 0;
     runner.active = true;
+    // Each mission is a new job, days after the last — the heat from the
+    // previous job has cooled. Missions that need heat set their own wanted
+    // level (mission 5's footage grab, the steal steps). This also makes
+    // mission 4's patrol-car disguise deterministic instead of depending on
+    // whatever wanted level the player carried in.
+    setWanted(world.police, 0);
     const mission = MISSIONS[index];
+    // Defense in depth: the pause menu's "restart mission" and the busted
+    // path can both reach startMission after the story is finished (index 7).
+    // There is no mission 7 — stay in free roam instead of crashing.
+    if (!mission) {
+      runner.active = false;
+      setObjective();
+      return;
+    }
     const s = mission.steps[0];
     if (s && s.kind === 'timed') runner.timedLeft = s.seconds;
     // Mission 1 spawns the Aurek service van; mission 4 spawns the patrol car.
@@ -117,6 +132,13 @@ export function createMissionRunner(world) {
     world.waterLevel = 0;
     world.mara.state = 'hidden';
     world.disguised = false;
+    if (runner.done) {
+      // The story is finished — there is no mission to restart. The player
+      // stays in free roam. (Before this guard, a bust after the ending called
+      // startMission(7) and crashed on MISSIONS[7].steps.)
+      setObjective();
+      return;
+    }
     startMission(runner.index);
   }
 
@@ -213,7 +235,9 @@ export function createMissionRunner(world) {
     const s = step();
     if (!s || s.kind !== 'steal') return;
     if (world.missionVehicle && car === world.missionVehicle) {
-      addWanted(world.police, 1);
+      // The patrol car is stolen unseen (its driver went for coffee) — taking
+      // it is the disguise, so it adds no heat. Every other steal is +1 star.
+      if (car.kind !== 'patrol') addWanted(world.police, 1);
       world.events.push({ type: 'stolen', kind: car.kind });
       advance();
     }

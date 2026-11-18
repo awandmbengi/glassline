@@ -15,6 +15,7 @@ export function createPolice(random) {
     heat: 0, // seconds of police line-of-sight, for decay
     bust: 0, // seconds the player has been cornered on foot
     spawnTimer: 0,
+    lastWanted: 0,
     random,
   };
 }
@@ -68,12 +69,18 @@ export function updatePolice(police, world, dt) {
   const player = world.player;
   const before = police.wanted;
 
-  // Spawn up to the wanted level's car count.
+  // Spawn up to the wanted level's car count. A fresh wanted level brings a
+  // car at once; the rest arrive every 1.5 s.
   const want = policeCountFor(police.wanted);
+  if (police.wanted > police.lastWanted && police.cars.length < want) {
+    spawnPoliceCar(police, world);
+    police.spawnTimer = 1.5;
+  }
+  police.lastWanted = police.wanted;
   police.spawnTimer -= dt;
   if (police.cars.length < want && police.spawnTimer <= 0) {
     spawnPoliceCar(police, world);
-    police.spawnTimer = 2.5;
+    police.spawnTimer = 1.5;
   }
   if (police.cars.length > want) {
     // Despawn the furthest car first.
@@ -86,7 +93,15 @@ export function updatePolice(police, world, dt) {
   }
 
   // Chase: steer toward the player and ram. On the overpass the police use the
-  // same ramps (groundHeight handles their y).
+  // same ramps (groundHeight handles their y). While the player is disguised
+  // (patrol car, mission 4, wanted low) the police treat the player as one of
+  // their own — they cruise past instead of chasing.
+  // On foot the police do NOT charge through the player: they pull up and park
+  // next to them, so the bust meter can actually fill. A car that charges at
+  // full speed overshoots, wedges against a building, and never corners anyone
+  // (the bust path never fired before this fix).
+  const disguised = Boolean(world.disguised);
+  const onFoot = !player.car;
   const others = [...world.traffic, ...police.cars, ...(player.car ? [player.car] : [])];
   for (const car of police.cars) {
     const dx = target.x - car.x;
@@ -96,10 +111,13 @@ export function updatePolice(police, world, dt) {
     let diff = wantHeading - car.heading;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
-    const steer = Math.max(-1, Math.min(1, diff * 2));
-    const throttle = dist > 4 ? 1 : 0.4;
+    const steer = disguised ? 0 : Math.max(-1, Math.min(1, diff * 2));
+    let throttle;
+    if (disguised) throttle = 0.25;
+    else if (onFoot) throttle = dist > 12 ? 0.8 : (dist > 5 ? 0.4 : 0);
+    else throttle = dist > 4 ? 1 : 0.4;
     const impact = driveCar(car, dt, throttle, steer, world.colliders, others);
-    if (impact > 12 && world.player.car === target) {
+    if (impact > 12 && world.player.car === target && !disguised) {
       world.events.push({ type: 'rammed', speed: impact });
     }
   }
@@ -130,6 +148,9 @@ export function updatePolice(police, world, dt) {
     }
   }
   if (heli.active) seen = true;
+  // Disguised: the police do not see the player at all, so wanted cools off
+  // while the patrol car holds the disguise.
+  if (disguised) seen = false;
   if (seen) {
     police.heat = 0;
     // On foot and cornered: the bust meter fills.
