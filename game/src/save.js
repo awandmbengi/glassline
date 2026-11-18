@@ -1,50 +1,56 @@
-// Save / load through localStorage. Small payload only: progress,
-// money, options. Safe when storage is blocked (sandboxed iframes):
-// every call is guarded and falls back to memory.
+// Save / load through localStorage.
+//
+// Only progress, money and options are stored — a small payload. When
+// storage is blocked (sandboxed iframes, private mode) every call is
+// guarded and the module quietly falls back to an in-memory copy, so the
+// game never crashes on a save it cannot write.
 import { CONFIG } from './config.js';
 
 const SCHEMA = 1;
+const PROBE_KEY = '__glassline_probe__';
 
-function blank() {
+function blankState() {
   return {
     version: SCHEMA,
-    missionsDone: 0,       // highest mission completed (0..7)
+    missionsDone: 0,
     money: CONFIG.money.start,
     carColor: 0xc23a2e,
     volume: CONFIG.audio.master,
     muted: false,
     radioStation: 0,
-    endings: [],           // endings seen: 'leak' | 'blackmail' | 'burn'
+    endings: [],
     freeRoam: false,
   };
 }
 
 export function createSave() {
-  let memory = blank();
+  let memory = blankState();
+
+  // Probe once at creation: can this environment actually use storage?
   let available = true;
   try {
-    const probe = '__glassline_probe__';
-    localStorage.setItem(probe, '1');
-    localStorage.removeItem(probe);
+    localStorage.setItem(PROBE_KEY, '1');
+    localStorage.removeItem(PROBE_KEY);
   } catch {
     available = false;
   }
 
-  function read() {
+  function load() {
+    // No storage at all: hand back the in-memory copy.
     if (!available) return { ...memory };
     try {
       const raw = localStorage.getItem(CONFIG.saveKey);
-      if (!raw) return blank();
+      if (!raw) return blankState();
       const data = JSON.parse(raw);
-      if (!data || data.version !== SCHEMA) return blank();
-      return { ...blank(), ...data };
+      if (!data || data.version !== SCHEMA) return blankState();
+      return { ...blankState(), ...data };
     } catch {
-      return blank();
+      return blankState();
     }
   }
 
-  function write(data) {
-    memory = { ...blank(), ...data, version: SCHEMA };
+  function save(data) {
+    memory = { ...blankState(), ...data, version: SCHEMA };
     if (!available) return false;
     try {
       localStorage.setItem(CONFIG.saveKey, JSON.stringify(memory));
@@ -55,16 +61,22 @@ export function createSave() {
   }
 
   function clear() {
-    memory = blank();
+    memory = blankState();
     if (!available) return;
-    try { localStorage.removeItem(CONFIG.saveKey); } catch { /* ignore */ }
+    try {
+      localStorage.removeItem(CONFIG.saveKey);
+    } catch {
+      // Storage disappeared mid-game; memory is already reset.
+    }
   }
 
   return {
-    load: read,
-    save: write,
+    load,
+    save,
     clear,
-    blank,
-    get available() { return available; },
+    blank: blankState,
+    get available() {
+      return available;
+    },
   };
 }

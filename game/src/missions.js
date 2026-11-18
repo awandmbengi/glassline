@@ -1,18 +1,25 @@
 // The seven missions of GLASSLINE. Each mission is a list of steps;
-// a step completes when its condition holds. Steps: reach a point,
-// enter a specific car, hold a channel, beat a timer, or make the
-// final choice. Failing (busted, wrecked, timed out) restarts it.
+// a step completes when its condition holds. Step kinds: plain
+// (reach a point / be in a car), channel (hold a spot for N seconds),
+// timed (reach the goal before the clock runs out), choice (the
+// player picks an ending in the UI). Failing (busted, wrecked, timed
+// out) restarts the mission from its first step.
 import { CONFIG } from './config.js';
 
+// A step that completes when the player stands within r metres of (x, z).
 function at(x, z, r) {
   return (G) => {
     const dx = G.player.x - x, dz = G.player.z - z;
     return dx * dx + dz * dz < r * r;
   };
 }
+
+// A step that completes when the player is driving a specific car.
 function inCar(car) {
   return (G) => G.player.car === car;
 }
+
+// A step that completes when the player drives near (x, z).
 function inCarNear(x, z, r) {
   return (G) => {
     if (!G.player.car) return false;
@@ -67,10 +74,9 @@ const DEFS = [
         { text: 'Bawa saksi naik ke mobilmu (masuk mobil di dekatnya)', check: (G2) => !!(G2.people.witness && G2.people.witness.inCar), target: { ...w, label: 'Saksi' } },
         { text: 'Antar saksi ke rumah aman', check: (G2) => {
           const wit = G2.people.witness;
-          return !!(wit && wit.inCar && G2.player.car) && (() => {
-            const dx = G2.player.x - s.x, dz = G2.player.z - s.z;
-            return dx * dx + dz * dz < 14 * 14;
-          })();
+          if (!(wit && wit.inCar && G2.player.car)) return false;
+          const dx = G2.player.x - s.x, dz = G2.player.z - s.z;
+          return dx * dx + dz * dz < 14 * 14;
         }, target: { ...s, label: 'Rumah Aman' } },
       ];
     },
@@ -178,18 +184,32 @@ export function createMissions(G) {
     if (G.onMissionComplete) G.onMissionComplete(def, reward);
   }
 
+  function advance() {
+    const step = current.steps[current.step];
+    if (step && step.onDone) step.onDone(G);
+    current.step += 1;
+    current.channel = 0;
+    current.timer = null;
+    if (current.step >= current.steps.length) {
+      complete();
+    } else {
+      G.audio.pickup();
+      G.hud.setObjective(current.steps[current.step].text);
+    }
+  }
+
   function update(dt) {
     if (!current) return;
     const step = current.steps[current.step];
     if (!step) { complete(); return; }
-    // Timed steps.
+    // Timed steps: the clock runs, onTick gets the time left.
     if (step.kind === 'timed') {
       if (current.timer === null) current.timer = step.duration;
       current.timer -= dt;
       if (step.onTick) step.onTick(G, dt, Math.max(0, current.timer));
       if (current.timer <= 0) { fail('Waktu habis — air menenggelamkan mobil.'); return; }
     }
-    // Channel steps: hold inside the radius for `duration`.
+    // Channel steps: hold inside the radius for `duration` seconds.
     if (step.kind === 'channel') {
       if (step.check(G)) {
         current.channel += dt;
@@ -204,20 +224,6 @@ export function createMissions(G) {
     if (step.kind === 'choice') return;
     // Plain steps.
     if (step.check(G)) advance();
-  }
-
-  function advance() {
-    const step = current.steps[current.step];
-    if (step && step.onDone) step.onDone(G);
-    current.step += 1;
-    current.channel = 0;
-    current.timer = null;
-    if (current.step >= current.steps.length) {
-      complete();
-    } else {
-      G.audio.pickup();
-      G.hud.setObjective(current.steps[current.step].text);
-    }
   }
 
   function choose(ending) {

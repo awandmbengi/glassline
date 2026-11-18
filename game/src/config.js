@@ -1,27 +1,28 @@
-// GLASSLINE — shared constants for the city of Veyra.
-// Everything tunable lives here so the other modules stay small.
+// GLASSLINE — one place for every tunable number in Veyra.
+//
+// The city is a 1200 m square centred on the origin, Y up. The dam wall
+// closes the east side, flood channels cut across the south, and an
+// elevated ring road crosses the north. Rain, dusk, steel blue + amber.
 export const CONFIG = {
-  version: '3.0.0',
+  version: '4.0.0',
   saveKey: 'glassline-save-v1',
   title: 'GLASSLINE',
   city: 'Veyra',
   hero: 'Nara Venn',
 
-  // World layout (units are metres, Y is up).
   world: {
-    size: 1200,          // playable square, centred on 0,0
+    size: 1200,
     half: 600,
-    roadGap: 120,        // distance between parallel roads
+    roadGap: 120,
     roadWidth: 14,
-    block: 96,           // building block size
+    block: 96,
     sidewalk: 4,
-    damX: 520,           // dam wall runs along x = +520
-    reservoirX0: 520,    // water east of the dam
-    canalY: -420,        // flood channels in the south
-    overpassY: 18,       // elevated ring road height
+    damX: 520,
+    reservoirX0: 520,
+    canalY: -420,
+    overpassY: 18,
   },
 
-  // Look: steel blue + amber, heavy rain, dusk.
   palette: {
     sky: 0x16222e,
     fog: 0x1a2836,
@@ -62,15 +63,15 @@ export const CONFIG = {
 
   wanted: {
     max: 5,
-    decaySeconds: 22,     // one star fades after this long unseen
+    decaySeconds: 22,
     stealCar: 1,
     hitPed: 1,
     hitCar: 1,
     seenSteal: 1,
-    policePerStar: 1,     // patrol cars per wanted star
-    heliAt: 3,            // helicopter from wanted 3
-    bustRadius: 4.5,      // police must be this close to bust
-    bustSeconds: 2.5,     // ...for this long while the player is slow
+    policePerStar: 1,
+    heliAt: 3,
+    bustRadius: 4.5,
+    bustSeconds: 2.5,
     bustSlowSpeed: 3,
   },
 
@@ -96,7 +97,6 @@ export const CONFIG = {
     { id: 7, name: 'The Choice', reward: 0 },
   ],
 
-  // Deterministic screenshot scenes (?shot=1..4).
   shots: [
     { id: 1, name: 'overpass', label: 'Pelarian di Jalan Layang' },
     { id: 2, name: 'intersection', label: 'Persimpangan Terkunci' },
@@ -105,16 +105,28 @@ export const CONFIG = {
   ],
 };
 
-// Small helpers shared by modules that do not want a dependency.
-export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
-export function lerp(a, b, t) { return a + (b - a) * t; }
+// Tiny math helpers used across modules; no dependencies.
+export function clamp(v, a, b) {
+  if (v < a) return a;
+  if (v > b) return b;
+  return v;
+}
+
+export function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
 export function dist2(ax, az, bx, bz) {
-  const dx = ax - bx, dz = az - bz;
+  const dx = ax - bx;
+  const dz = az - bz;
   return dx * dx + dz * dz;
 }
+
+// Interpolate between two headings along the shortest arc.
 export function angleLerp(a, b, t) {
-  let d = (b - a) % (Math.PI * 2);
-  if (d > Math.PI) d -= Math.PI * 2;
-  if (d < -Math.PI) d += Math.PI * 2;
+  const TAU = Math.PI * 2;
+  let d = (b - a) % TAU;
+  if (d > Math.PI) d -= TAU;
+  if (d < -Math.PI) d += TAU;
   return a + d * t;
 }

@@ -16,6 +16,14 @@ node serve.ts
 
 Then open http://localhost:8080 in desktop Chrome. WASD drives and walks, E enters and exits cars, Space is the handbrake, Q changes the radio station, M mutes, Esc pauses.
 
+## Verify it
+
+```sh
+node main.ts --verify   # pre-flight: all required files present and parsing
+node test.cjs           # unit tests for the pure modules
+node missions-test.cjs  # headless playthrough in Chrome: missions 1-7, ending, save, shots
+```
+
 ---
 
 <sub>Entered on [make.fun](https://make.fun/?ref=dh5kzrzk&utm_source=github&utm_medium=readme&utm_campaign=gta6-01) · AI agents build software for cash rewards</sub>

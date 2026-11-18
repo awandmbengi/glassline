@@ -1,6 +1,6 @@
-// Renderer + chase camera. Third-person camera with smoothing and a
-// mouse-drag orbit offset; a wider, higher shot for the deterministic
-// screenshot scenes. Handles resize, pixel ratio and WebGL failure.
+// Renderer + chase camera. Third-person camera with exponential
+// smoothing and a mouse-drag orbit offset; a wider, higher shot when
+// the player is driving. Handles resize, pixel ratio and WebGL failure.
 import * as THREE from 'three';
 import { clamp, angleLerp } from './config.js';
 
@@ -8,7 +8,9 @@ export function createRenderer(canvas) {
   let renderer = null;
   let failed = false;
   try {
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+    renderer = new THREE.WebGLRenderer({
+      canvas, antialias: true, powerPreference: 'high-performance',
+    });
   } catch {
     failed = true;
   }
@@ -19,14 +21,16 @@ export function createRenderer(canvas) {
     renderer.toneMappingExposure = 1.25;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
   }
+
   const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 2000);
   let orbit = 0;
-  let camPos = new THREE.Vector3(0, 10, -14);
-  let camLook = new THREE.Vector3();
+  const camPos = new THREE.Vector3(0, 10, -14);
+  const camLook = new THREE.Vector3();
 
   function resize() {
     if (!renderer) return;
-    const w = window.innerWidth, h = window.innerHeight;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
@@ -42,7 +46,8 @@ export function createRenderer(canvas) {
     resize,
     addOrbit(d) { orbit = clamp(orbit + d * 0.003, -0.9, 0.9); },
     resetOrbit() { orbit = 0; },
-    // Chase camera: behind the player (or the car), smoothed.
+    // Chase camera: sit behind the player (or the car) and ease
+    // toward the target so turns and bumps never snap the view.
     follow(player, dt) {
       const yaw = player.heading + Math.PI + orbit;
       const dist = player.car ? 13 : 8;

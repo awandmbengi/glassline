@@ -229,11 +229,13 @@ async function main() {
     check(ending.saved.includes('leak'), 'LEAK ending saved to localStorage');
 
     // Save / Continue: reload, the save must still be there.
+    // Money: $120 start, -$100 for the busted fine, +$4000 mission
+    // rewards = $4,020 exactly.
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => window.__glassline, { timeout: 20000 });
     const saved = await evalJs(() => window.__glassline.load());
     check(saved.missionsDone === 7, `save persists after reload (missionsDone ${saved.missionsDone})`);
-    check(saved.money > 120, `money grew from missions ($${saved.money})`);
+    check(saved.money === 4020, `money is exactly $4,020 after busted fine + rewards (got $${saved.money})`);
     check(await page.evaluate(() => !!document.querySelector('[data-act="continue"]')), 'menu offers Lanjutkan after a save');
     await clickAct('continue');
     await sleep(500);

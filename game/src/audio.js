@@ -1,10 +1,13 @@
-// Synthesized sound effects with plain Web Audio. No audio files:
-// every sound is built from oscillators and filtered noise, so the
-// game works offline and starts silent until the player clicks Start
-// (browsers require a user gesture before audio).
+// GLASSLINE audio — every sound is synthesized live with Web Audio.
+// No sound files: oscillators and filtered noise only, so the game
+// stays offline. The context is created lazily on the first user
+// gesture (browsers block audio before one), and every public method
+// is safe to call before that — it simply does nothing.
 import { CONFIG } from './config.js';
 
 export function createAudio() {
+  // Private state. The context and master gain appear only after
+  // ensure() succeeds; until then the game runs silent.
   let ctx = null;
   let master = null;
   let engineOsc = null;
@@ -15,6 +18,7 @@ export function createAudio() {
   let muted = false;
   let volume = CONFIG.audio.master;
 
+  // Create (or resume) the AudioContext. False means "no audio yet".
   function ensure() {
     if (ctx) {
       if (ctx.state === 'suspended') ctx.resume().catch(() => {});
@@ -33,14 +37,17 @@ export function createAudio() {
     }
   }
 
+  // One shared white-noise buffer, rebuilt per call length.
   function noiseBuffer(seconds = 1) {
-    const len = Math.floor(ctx.sampleRate * seconds);
+    const len = Math.max(1, Math.floor(ctx.sampleRate * seconds));
     const buf = ctx.createBuffer(1, len, ctx.sampleRate);
     const data = buf.getChannelData(0);
     for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
     return buf;
   }
 
+  // A single oscillator tone that fades out exponentially. slideTo
+  // bends the pitch down (or up) across the tone's life.
   function blip(freq, dur, type = 'sine', gain = 0.2, slideTo = null) {
     if (!ensure()) return;
     const t = ctx.currentTime;
@@ -56,6 +63,7 @@ export function createAudio() {
     o.stop(t + dur + 0.02);
   }
 
+  // A burst of filtered noise with a decaying envelope.
   function noiseBurst(dur, gain = 0.3, filterFreq = 1200, type = 'lowpass') {
     if (!ensure()) return;
     const t = ctx.currentTime;
@@ -73,12 +81,13 @@ export function createAudio() {
   }
 
   return {
-    // Call from a user gesture (Start button). Returns true when live.
+    // Called from a user gesture (e.g. the Start button). True = live.
     unlock() { return ensure(); },
     get ready() { return ctx !== null; },
-    // The raw context, so the radio can schedule on the same clock.
+    // Raw context, exposed so the radio module can schedule on it.
     get _ac() { return ctx; },
     get isMuted() { return muted; },
+
     setVolume(v) {
       volume = Math.max(0, Math.min(1, v));
       if (master) master.gain.value = muted ? 0 : volume;
@@ -88,6 +97,7 @@ export function createAudio() {
       if (master) master.gain.value = muted ? 0 : volume;
     },
 
+    // --- One-shot effects -------------------------------------------------
     click() { blip(660, 0.06, 'square', 0.08); },
     pickup() { blip(520, 0.09, 'sine', 0.18); blip(780, 0.12, 'sine', 0.15); },
     crash() { noiseBurst(0.25, 0.4, 900); blip(90, 0.2, 'sawtooth', 0.2, 45); },
@@ -98,17 +108,23 @@ export function createAudio() {
         setTimeout(() => blip(f, 0.22, 'triangle', 0.18), i * 110);
       });
     },
-    busted() { [392, 311, 233].forEach((f, i) => setTimeout(() => blip(f, 0.3, 'sawtooth', 0.14), i * 160)); },
+    busted() {
+      [392, 311, 233].forEach((f, i) => {
+        setTimeout(() => blip(f, 0.3, 'sawtooth', 0.14), i * 160);
+      });
+    },
     thunder() { noiseBurst(1.4, 0.22, 220); },
     door() { blip(180, 0.08, 'square', 0.1, 120); noiseBurst(0.08, 0.08, 2000, 'highpass'); },
 
-    // Per-frame: engine hum follows the car's speed (0..~55 m/s).
+    // --- Continuous sounds ------------------------------------------------
+    // Per-frame hook: engine hum tracks the car's speed (0..~55 m/s).
     update(speed, inCar) {
       const speed01 = Math.max(0, Math.min(1, speed / 55));
       this.engine(speed01, !!inCar);
     },
 
-    // Continuous engine hum: pitch follows speed 0..1.
+    // Engine drone: a sawtooth through a lowpass, pitch and loudness
+    // rising with speed01 (0..1). Created once, reused while driving.
     engine(speed01, on) {
       if (!ensure()) return;
       if (!on) {
@@ -131,7 +147,7 @@ export function createAudio() {
       engineGain.gain.setTargetAtTime(0.05 + speed01 * 0.05, t, 0.1);
     },
 
-    // Two-tone police siren while any patrol is chasing.
+    // Two-tone police siren, alternating 960 / 720 Hz every 420 ms.
     siren(on) {
       if (!on) {
         if (sirenTimer) { clearInterval(sirenTimer); sirenTimer = null; }

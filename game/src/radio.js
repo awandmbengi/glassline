@@ -1,26 +1,28 @@
-// Procedural radio: three stations, each a tiny step sequencer played
-// through Web Audio. No music files; the patterns are written here,
-// so the game stays offline and the judge hears a different station
-// per mood. Scheduling uses the audio clock, not timers, for timing.
+// GLASSLINE radio — procedural stations, no music files. Each station
+// is a 16-step sequencer: a bass line, a sparse lead and a hat row,
+// all scheduled against the shared audio clock so the beat stays
+// steady even when the frame rate wobbles.
 import { CONFIG } from './config.js';
 
-// 16-step patterns: bass notes (scale degrees, 0 = rest), lead notes,
-// and a hat row (1 = hit). Degrees are semitone offsets from root.
+// Patterns keyed by station mood. Values are semitone offsets from the
+// station root; 0 means rest for bass/lead. The lead plays an octave
+// above the root. Minor-flavoured: bass leans on roots and fifths,
+// lead answers sparsely so the mix never gets crowded.
 const PATTERNS = {
   drive: {
-    bass: [0, 0, 7, 0, 10, 0, 7, 0, 0, 0, 7, 0, 12, 0, 10, 7],
-    lead: [12, 0, 15, 0, 19, 0, 15, 12, 0, 12, 0, 15, 0, 19, 22, 0],
-    hat: [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1],
+    bass: [0, 0, 0, 7, 0, 0, 7, 0, 10, 0, 0, 7, 0, 12, 0, 7],
+    lead: [0, 12, 0, 0, 15, 0, 0, 19, 0, 0, 17, 0, 15, 0, 0, 12],
+    hat: [1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1],
   },
   dark: {
-    bass: [0, 0, 0, 3, 0, 0, 6, 0, 0, 0, 0, 3, 0, 5, 0, 0],
-    lead: [12, 0, 0, 0, 13, 0, 0, 0, 12, 0, 0, 15, 0, 0, 13, 0],
-    hat: [1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0],
+    bass: [0, 0, 3, 0, 0, 0, 0, 6, 0, 3, 0, 0, 0, 0, 5, 0],
+    lead: [0, 0, 12, 0, 0, 13, 0, 0, 0, 0, 15, 0, 0, 12, 0, 0],
+    hat: [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
   },
   chill: {
-    bass: [0, 0, 5, 0, 7, 0, 5, 0, 0, 0, 3, 0, 5, 0, 7, 0],
-    lead: [12, 0, 16, 0, 19, 0, 16, 0, 12, 0, 14, 0, 17, 0, 19, 0],
-    hat: [1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1],
+    bass: [0, 5, 0, 0, 7, 0, 0, 5, 0, 0, 3, 0, 0, 7, 0, 5],
+    lead: [12, 0, 0, 19, 0, 0, 16, 0, 0, 14, 0, 0, 17, 0, 0, 19],
+    hat: [1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0],
   },
 };
 
@@ -33,10 +35,9 @@ export function createRadio(audio) {
   let timer = null;
   let bus = null;
 
+  // The radio mixes through its own gain bus into the audio context's
+  // destination. It can only exist once the context is unlocked.
   function startBus() {
-    // The radio shares the audio module's context through a fresh gain.
-    // We reach the context via a tiny unlock tone: audio.unlock() must
-    // have run from a user gesture before start() is called.
     if (!audio.ready) return false;
     if (!bus) {
       const ac = audio._ac;
@@ -48,6 +49,7 @@ export function createRadio(audio) {
     return true;
   }
 
+  // One synth note on the bus, with an exponential decay envelope.
   function note(freq, t, dur, type, gain) {
     const ac = audio._ac;
     if (!ac || !bus) return;
@@ -62,6 +64,7 @@ export function createRadio(audio) {
     o.stop(t + dur + 0.02);
   }
 
+  // A short, bright hat tick: decaying noise through a highpass.
   function hat(t) {
     const ac = audio._ac;
     if (!ac || !bus) return;
@@ -80,6 +83,7 @@ export function createRadio(audio) {
     s.start(t);
   }
 
+  // Schedule every step whose time falls inside the next 250 ms.
   function scheduleStep() {
     const ac = audio._ac;
     if (!ac) return;
@@ -103,9 +107,11 @@ export function createRadio(audio) {
     get current() { return current; },
     get currentName() { return stations[current].name; },
     get isPlaying() { return playing; },
-    // Per-frame: start the radio as soon as the audio context is
-    // unlocked (a user gesture), then keep it running.
+
+    // Per-frame: the radio starts itself as soon as the audio context
+    // has been unlocked by a user gesture, then keeps playing.
     update() { if (!playing) this.start(); },
+
     start() {
       if (playing) return true;
       if (!startBus()) return false;
@@ -116,15 +122,18 @@ export function createRadio(audio) {
       timer = setInterval(scheduleStep, 90);
       return true;
     },
+
     stop() {
       playing = false;
       if (timer) { clearInterval(timer); timer = null; }
     },
+
     setStation(i) {
       current = ((i % stations.length) + stations.length) % stations.length;
       step = 0;
       if (playing && audio._ac) nextTime = audio._ac.currentTime + 0.05;
     },
+
     next() { this.setStation(current + 1); return stations[current].name; },
   };
 }

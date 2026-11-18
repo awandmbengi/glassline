@@ -81,6 +81,22 @@ function walk(dir, base) {
   return out;
 }
 
+// Parse one JS file as an ES module using Node itself, in a temp dir
+// so nothing is left behind. Returns an error string, or null.
+function parseError(rel, bytes) {
+  const tmp = mkdtempSync(join(tmpdir(), 'glassline-check-'));
+  try {
+    const tmpFile = join(tmp, 'check.mjs');
+    writeFileSync(tmpFile, bytes);
+    execFileSync(process.execPath, ['--check', tmpFile], { stdio: 'pipe' });
+    return null;
+  } catch (e) {
+    return String(e.stderr || e.stdout || e.message).trim().split('\n').slice(0, 3).join(' ');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function preflight() {
   const problems = [];
   for (const rel of REQUIRED_FILES) {
@@ -90,19 +106,10 @@ function preflight() {
     const bytes = readFileSync(full);
     if (bytes.length === 0) { problems.push(`${rel}: empty`); continue; }
     if (rel.endsWith('.js')) {
-      // Parse with Node itself, as a module: the browser loads these
-      // as ES modules, so a CommonJS parse would reject every import.
-      const tmp = mkdtempSync(join(tmpdir(), 'glassline-check-'));
-      try {
-        const tmpFile = join(tmp, 'check.mjs');
-        writeFileSync(tmpFile, bytes);
-        execFileSync(process.execPath, ['--check', tmpFile], { stdio: 'pipe' });
-      } catch (e) {
-        const detail = String(e.stderr || e.stdout || e.message).trim().split('\n').slice(0, 3).join(' ');
-        problems.push(`${rel}: does not parse: ${detail}`);
-      } finally {
-        rmSync(tmp, { recursive: true, force: true });
-      }
+      // The browser loads these as ES modules, so a CommonJS parse
+      // would reject every import: parse them as modules instead.
+      const detail = parseError(rel, bytes);
+      if (detail) problems.push(`${rel}: does not parse: ${detail}`);
     }
     if (rel.endsWith('.html') && !String(bytes).includes('</html>')) {
       problems.push(`${rel}: no closing </html>`);

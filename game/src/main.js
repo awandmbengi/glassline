@@ -1,9 +1,11 @@
 // GLASSLINE — bootstrap, game loop and state machine.
-// Wires every module into one game object G, runs the loop, and owns
-// the screens (menu, pause, busted, failed, ending) plus the save.
+//
+// Wires every module into one game object G, runs the frame loop, and
+// owns the screens (menu, pause, busted, failed, ending) plus saving.
+// The player is Nara Venn: on foot she walks, in a car she drives;
+// missions, police and the world all read from G.
 import * as THREE from 'three';
-import { CONFIG, clamp } from './config.js';
-import { createRng } from './random.js';
+import { CONFIG } from './config.js';
 import { createInput } from './input.js';
 import { createSave } from './save.js';
 import { createAudio } from './audio.js';
@@ -18,6 +20,7 @@ import { createHud } from './hud.js';
 import { createRenderer } from './render.js';
 import { shotFromUrl, applyShot } from './shots.js';
 
+// The game object: everything the modules need to talk to each other.
 const G = {
   money: CONFIG.money.start,
   ending: null,
@@ -44,7 +47,7 @@ G.police = createPolice(G.world, G.layout, G.vehicles, G.scene);
 G.hud = createHud();
 G.missions = createMissions(G);
 
-// Nara on foot: amber jacket, visible in the rain.
+// Nara on foot: amber jacket, easy to spot in the rain.
 function buildNaraMesh() {
   const g = new THREE.Group();
   const jacket = new THREE.MeshStandardMaterial({ color: 0xd8a13c, roughness: 0.7 });
@@ -76,7 +79,8 @@ G.player = {
 };
 G.scene.add(G.player.mesh);
 
-let state = 'menu'; // menu | playing | paused | busted | failed | ending | shot
+// menu | playing | paused | busted | failed | ending | shot | choice
+let state = 'menu';
 let stateData = null;
 let nextMissionTimer = 0;
 let pedRespawn = 0;
@@ -95,12 +99,12 @@ function setState(s, data = null) {
   stateData = data;
 }
 
+// Steal (or borrow) the nearest car and get in.
 function enterCar() {
   const p = G.player;
   if (p.car) return false;
-  const car = G.vehicles.nearestCar(p.x, p.z, CONFIG.player.enterRadius, (c) => !c.isPolice || true);
-  if (!car) return false;
-  if (car.isPlayer) return false;
+  const car = G.vehicles.nearestCar(p.x, p.z, CONFIG.player.enterRadius);
+  if (!car || car.isPlayer) return false;
   const wasStolen = !car.stolen;
   car.stolen = true;
   car.isPlayer = true;
@@ -112,7 +116,7 @@ function enterCar() {
     G.police.addWanted(CONFIG.wanted.stealCar);
     G.hud.toast(`Kamu mencuri ${car.type === 'patrol' ? 'mobil patroli' : 'mobil'} — polisi mengejarmu!`);
   }
-  // The witness rides along when she follows and is near the car.
+  // The witness rides along when she is following and close to the car.
   const wit = G.people.witness;
   if (wit && wit.following && !wit.inCar) {
     const dx = wit.x - p.x, dz = wit.z - p.z;
@@ -144,8 +148,8 @@ function exitCar() {
 }
 
 function startMission(id) {
-  // Cancel any pending auto-start: the player (or a test) starting a
-  // mission explicitly wins over the timer armed by the last completion.
+  // A player (or test) starting a mission explicitly wins over the
+  // timer armed by the last completion.
   nextMissionTimer = 0;
   G.missions.abort();
   G.police.reset();
@@ -157,7 +161,7 @@ function startMission(id) {
 
 G.onMissionComplete = (def, reward) => {
   saveGame();
-  if (def.id >= 7) return; // ending handled by onEnding
+  if (def.id >= 7) return; // the ending is handled by onEnding
   nextMissionTimer = 2.5;
   G.hud.setMission('Jalan bebas');
 };
@@ -303,7 +307,8 @@ function wireScreenButtons() {
   });
 }
 
-// Ending choice: the mission-7 choice step shows three buttons.
+// Mission 7's choice step shows three buttons; the click handler above
+// routes them to missions.choose().
 function maybeShowChoice() {
   const cur = G.missions.current;
   if (!cur || cur.def.id !== 7) return;
@@ -339,39 +344,46 @@ function loop(now) {
 function update(dt) {
   const p = G.player;
   const input = G.input;
-  if (input.wasPressed('KeyP') || input.wasPressed('Escape')) {
-    if (state === 'playing') { showPause(); return; }
-    if (state === 'paused') { G.hud.setScreen(''); setState('playing'); return; }
+  const inShot = state === 'shot';
+
+  // Keyboard shortcuts are ignored in shot mode: the staged scene
+  // must not move while a screenshot is taken.
+  if (!inShot) {
+    if (input.wasPressed('p') || input.wasPressed('Escape')) {
+      if (state === 'playing') { showPause(); return; }
+      if (state === 'paused') { G.hud.setScreen(''); setState('playing'); return; }
+    }
+    if (input.wasPressed('m')) {
+      G.audio.setMuted(!G.audio.isMuted);
+      G.hud.toast(G.audio.isMuted ? 'Suara dimatikan' : 'Suara menyala');
+    }
+    if (input.wasPressed('q')) {
+      const name = G.radio.next();
+      G.hud.setRadio(name);
+      G.hud.toast(`Radio: ${name}`);
+    }
+    if (input.wasPressed('e')) {
+      if (p.car) exitCar();
+      else enterCar();
+    }
+    // Mouse drag orbits the camera.
+    const drag = input.consumeDrag();
+    if (drag.dx !== 0) G.renderer.addOrbit(drag.dx);
+    if (drag.dy !== 0) G.renderer.resetOrbit();
   }
-  if (input.wasPressed('KeyM')) {
-    G.audio.setMuted(!G.audio.isMuted);
-    G.hud.toast(G.audio.isMuted ? 'Suara dimatikan' : 'Suara menyala');
-  }
-  if (input.wasPressed('KeyQ')) {
-    const name = G.radio.next();
-    G.hud.setRadio(name);
-    G.hud.toast(`Radio: ${name}`);
-  }
-  if (input.wasPressed('KeyE')) {
-    if (p.car) exitCar();
-    else enterCar();
-  }
-  // Mouse drag orbits the camera.
-  const drag = input.consumeDrag();
-  if (drag.dx !== 0) G.renderer.addOrbit(drag.dx);
-  if (drag.dy !== 0) G.renderer.resetOrbit();
 
   if (p.stun > 0) p.stun -= dt;
 
-  // Movement.
+  // Movement: driving in a car, or walking on foot.
   if (p.car) {
-    // drive() wants numbers; the input module only has booleans.
-    const driveInput = {
-      throttle: (input.forward ? 1 : 0) - (input.back ? 1 : 0),
-      steer: (input.right ? 1 : 0) - (input.left ? 1 : 0),
-      brake: input.handbrake,
-    };
-    G.vehicles.drive(p.car, driveInput, dt);
+    if (!inShot) {
+      const driveInput = {
+        throttle: (input.forward ? 1 : 0) - (input.back ? 1 : 0),
+        steer: (input.right ? 1 : 0) - (input.left ? 1 : 0),
+        brake: input.handbrake,
+      };
+      G.vehicles.drive(p.car, driveInput, dt);
+    }
     p.x = p.car.x; p.z = p.car.z; p.y = G.world.groundHeight(p.car.x, p.car.z);
     p.heading = p.car.heading;
     p.speed = p.car.speed;
@@ -387,7 +399,7 @@ function update(dt) {
       G.hud.toast('Mobilmu hancur!');
       if (G.missions.current) G.missions.fail('Mobilmu hancur.');
     }
-  } else if (p.stun <= 0) {
+  } else if (p.stun <= 0 && !inShot) {
     p.camYaw = p.heading + Math.PI + G.renderer.orbit;
     const hitBy = G.people.movePlayerOnFoot(p, input, dt, G.vehicles.cars);
     if (hitBy) {
@@ -405,10 +417,8 @@ function update(dt) {
     p.mesh.rotation.z = walk;
   }
 
-  G.vehicles.update(dt, {
-    onCrash: (a, b) => {
-      if (a === p.car || b === p.car) G.audio.crash(0.5);
-    },
+  G.vehicles.update(dt, (a, b) => {
+    if (a === p.car || b === p.car) G.audio.crash(0.5);
   });
   // Pedestrian hit by the player's car.
   if (p.car) {
@@ -456,7 +466,7 @@ function boot() {
   G.vehicles.spawnTraffic(CONFIG.traffic.count);
   G.people.spawnCrowd(CONFIG.pedestrians.count);
   // The player's starter car: a courier van parked near spawn.
-  const starter = G.vehicles.spawn('courier', G.layout.landmarks.playerSpawn.x + 6, G.layout.landmarks.playerSpawn.z + 2, 0, {});
+  G.vehicles.spawn('courier', G.layout.landmarks.playerSpawn.x + 6, G.layout.landmarks.playerSpawn.z + 2, 0, {});
   G.hud.setRadio(G.radio.currentName);
   G.hud.setMoney(G.money);
   G.hud.setWanted(0);
